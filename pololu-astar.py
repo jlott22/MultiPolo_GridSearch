@@ -390,7 +390,42 @@ def move_forward_one_cell():
     motors_off()
     return False
 
-def calibration():
+def calibrate():
+    """Calibrate line sensors then advance to the first intersection.
+
+    The robot spins in place while repeatedly sampling the line sensors to
+    establish min/max values.  The robot should be placed one cell behind its
+    intended starting position; after calibration it drives forward to the
+    first intersection and updates the global ``pos`` to ``START_POS`` so the
+    caller sees that intersection as the starting point of the search.
+    """
+    global pos
+
+    # 1) Spin in place to expose sensors to both edges of the line.
+    #    A single full rotation is enough, so spin in one direction while
+    #    repeatedly sampling the sensors.  The Pololu library recommends
+    #    speeds of 920/-920 with ~10 ms pauses for calibration.
+    for _ in range(50):
+        if not running:
+            motors_off()
+            return
+
+        motors.set_speeds(920, -920)
+        line_sensors.calibrate()
+        time.sleep_ms(10)
+
+    motors_off()
+
+    # 2) Move forward until an intersection is detected.  After the forward
+    #    move the robot is sitting on our true starting cell (defined by
+    #    ``START_POS`` at the top of the file) so overwrite any temporary
+    #    position with that constant and mark the cell visited.
+    if move_forward_one_cell():
+        pos[0], pos[1] = START_POS
+        if 0 <= pos[0] < GRID_SIZE and 0 <= pos[1] < GRID_SIZE:
+            grid[pos[1]][pos[0]] = 2
+
+    motors_off()
     
 
 def at_intersection_and_white():
