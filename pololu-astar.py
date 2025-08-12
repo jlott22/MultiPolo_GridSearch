@@ -95,7 +95,7 @@ LINE_CENTER = 2000        # weighted position target (0..4000)
 BLACK_THRESH = 600        # calibrated "black" threshold (0..1000)
 INTERSECTION_SAMPLES = 3  # consecutive reads to confirm intersection
 STRAIGHT_CREEP = 450      # forward speed while "locked" straight
-START_LOCK_MS = 500       # hold straight this long after function starts
+START_LOCK_MS = 1000       # hold straight this long after function starts
 
 # persistent state for debounce/lock
 _intersection_hits = 0
@@ -113,9 +113,9 @@ BASE_SPEED = 600
 KP = 0.05
 CELL_TRAVEL_MS = 650
 
-TURN_SPEED = 600
-YAW_90_MS = 0.40
-YAW_180_MS = 0.80
+TURN_SPEED = 900
+YAW_90_MS = 0.80
+YAW_180_MS = 1.60
 
 # -----------------------------
 # Hardware interfaces
@@ -336,6 +336,8 @@ def move_forward_one_cell():
     global _intersection_hits, _lock_intersection
     _intersection_hits = 0
     _lock_intersection = False
+
+    flash_LEDS(1)
 
     # Initial lock to roll straight for half a second
     lock_release_time = time.ticks_add(time.ticks_ms(), START_LOCK_MS)
