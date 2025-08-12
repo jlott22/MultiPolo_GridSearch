@@ -401,9 +401,9 @@ def at_intersection_and_white():
     Returns bool.
     """
     r = line_sensors.read_calibrated()      # [0]..[4], center is [2]
-    pos_raw = line_sensors.read_line(r)
+    pos = weighted_position(r)
     center_white = r[2] < MIDDLE_WHITE_THRESH
-    centered = abs(pos_raw - LINE_CENTER) < 150
+    centered = abs(pos - LINE_CENTER) < 150
     return center_white and centered
 
 # ===========================================================
