@@ -14,6 +14,7 @@ String commmandtopic = clientID + "/command"; // Robot-specific command topic
 String statustopic = clientID + "/status";  // Status topic for publishing
 String alerttopic = clientID + "/alert";  // Alert topic for publishing
 String coordtopic = clientID + "/coord";  // Coordinates topic for publishing
+String broadcasttopic = "broadcast";      // Broadcast topic for all robots
 const char *lastWillMessage = "disconnected"; // Last Will message
 
 ESP32MQTTClient mqttClient; // MQTT client object
@@ -39,8 +40,13 @@ void onMqttConnect(esp_mqtt_client_handle_t client)
                                  Serial.println("Robot-specific command: " + payload);
                                  robotSerial.println(payload);
                              });
+        mqttClient.subscribe(broadcasttopic.c_str(), [](const String &payload)
+                             {
+                                 Serial.println("Broadcast command: " + payload);
+                                 robotSerial.println(payload);
+                             });
 
-        Serial.println("Subscribed to robot specific command topic");
+        Serial.println("Subscribed to robot specific and broadcast command topics");
     }
 }
 
@@ -61,6 +67,8 @@ void setup()
     Serial.println("\nConnected to Wi-Fi!");
 
     // MQTT Client Setup
+    mqttClient.onConnect(onMqttConnect); // Register connection callback
+    mqttClient.onEvent(handleMQTT);      // Register event handler
     mqttClient.setURI(server);
     mqttClient.enableDebuggingMessages(); // Enable MQTT debug logs
     mqttClient.enableLastWillMessage(statustopic.c_str(), lastWillMessage); // Set Last Will message
@@ -103,6 +111,11 @@ void loop()
                                      Serial.println("Robot-specific command: " + payload);
                                      robotSerial.println(payload);
                                  });
+            mqttClient.subscribe(broadcasttopic.c_str(), [](const String &payload)
+                                 {
+                                     Serial.println("Broadcast command: " + payload);
+                                     robotSerial.println(payload);
+                                 });
         }
     }
 
@@ -121,10 +134,6 @@ void loop()
           String full_msg = serialBuffer.substring(0, serialBuffer.length() - 1);
           serialBuffer = "";
           handlemsg(full_msg); //publish message to proper topic
-        }
-        else
-        {
-            Serial.println("Warning: Empty message from Pololu robot");
         }
     }
 
