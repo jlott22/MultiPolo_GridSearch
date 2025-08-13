@@ -10,11 +10,10 @@ const char *server = "mqtt://192.168.1.10:1883"; // MQTT server IP
 
 // Robot-specific identifiers
 String clientID = "00";
-String commmandtopic = clientID + "/command"; // Robot-specific command topic
-String statustopic = clientID + "/status";  // Status topic for publishing
-String alerttopic = clientID + "/alert";  // Alert topic for publishing
-String coordtopic = clientID + "/coord";  // Coordinates topic for publishing
-String broadcasttopic = "broadcast";      // Broadcast topic for all robots
+String visitedtopic = clientID + "/visited"; 
+String statustopic = clientID + "/status";  
+String alerttopic = clientID + "/alert";  
+String cluetopic = clientID + "/clue";  
 const char *lastWillMessage = "disconnected"; // Last Will message
 
 ESP32MQTTClient mqttClient; // MQTT client object
@@ -35,14 +34,24 @@ void onMqttConnect(esp_mqtt_client_handle_t client)
         mqttClient.publish(statustopic.c_str(), "connected", 0, false);
         Serial.println("Connected to MQTT Broker!");
 
-        mqttClient.subscribe(commmandtopic.c_str(), [](const String &payload)
+        mqttClient.subscribe(cluetopic.c_str(), [](const String &payload)
                              {
-                                 Serial.println("Robot-specific command: " + payload);
+                                 Serial.println("Clue: " + payload);
                                  robotSerial.println(payload);
                              });
-        mqttClient.subscribe(broadcasttopic.c_str(), [](const String &payload)
+        mqttClient.subscribe(alerttopic.c_str(), [](const String &payload)
                              {
-                                 Serial.println("Broadcast command: " + payload);
+                                 Serial.println("Alert: " + payload);
+                                 robotSerial.println(payload);
+                             });
+        mqttClient.subscribe(visitedtopic.c_str(), [](const String &payload)
+                             {
+                                 Serial.println("Visited: " + payload);
+                                 robotSerial.println(payload);
+                             });
+        mqttClient.subscribe(statustopic.c_str(), [](const String &payload)
+                             {
+                                 Serial.println("Status: " + payload);
                                  robotSerial.println(payload);
                              });
 
@@ -106,16 +115,26 @@ void loop()
             mqttClient.publish(statustopic.c_str(), "Reconnected", 0, false);
 
             // Resubscribe to topics after reconnection
-            mqttClient.subscribe(commmandtopic.c_str(), [](const String &payload)
-                                 {
-                                     Serial.println("Robot-specific command: " + payload);
-                                     robotSerial.println(payload);
-                                 });
-            mqttClient.subscribe(broadcasttopic.c_str(), [](const String &payload)
-                                 {
-                                     Serial.println("Broadcast command: " + payload);
-                                     robotSerial.println(payload);
-                                 });
+        mqttClient.subscribe(cluetopic.c_str(), [](const String &payload)
+                             {
+                                 Serial.println("Clue: " + payload);
+                                 robotSerial.println(payload);
+                             });
+        mqttClient.subscribe(alerttopic.c_str(), [](const String &payload)
+                             {
+                                 Serial.println("Alert: " + payload);
+                                 robotSerial.println(payload);
+                             });
+        mqttClient.subscribe(visitedtopic.c_str(), [](const String &payload)
+                             {
+                                 Serial.println("Visited: " + payload);
+                                 robotSerial.println(payload);
+                             });
+        mqttClient.subscribe(statustopic.c_str(), [](const String &payload)
+                             {
+                                 Serial.println("Status: " + payload);
+                                 robotSerial.println(payload);
+                             });
         }
     }
 
@@ -158,10 +177,13 @@ void sendtoMQTT(String topic, String msg) {
   if (topic == "alert") {
     mqttClient.publish(alerttopic.c_str(), msg, 0, false);
   }
-  else if (topic == "coord") {
+  else if (topic == "visited") {
     mqttClient.publish(coordtopic.c_str(), msg, 0, false);
   }
   else if (topic == "status") {
+    mqttClient.publish(statustopic.c_str(), msg, 0, false);
+  }
+    else if (topic == "clue") {
     mqttClient.publish(statustopic.c_str(), msg, 0, false);
   }
 }
