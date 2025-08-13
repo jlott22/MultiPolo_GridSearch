@@ -182,7 +182,7 @@ def stop_and_alert_object():
 # ===========================================================
 def uart_send(topic, payload):
     """Send a single line to ESP32; it forwards to MQTT."""
-    line = f"{ROBOT_ID}/{topic}:{payload}-"
+    line = f"{ROBOT_ID}/{topic}={payload}-"
     uart.write(line)
 
 def publish_position():
@@ -226,30 +226,30 @@ def handle_uart_line(line):
 
     # Minimal parsing: "<sender>/<topic>:<payload>"
     try:
-        left, payload = line.split(":", 1)
+        left, payload = line.split("=", 1)
         sender, topic = left.split("/", 1)
     except ValueError:
         return
     if sender != OTHER_ROBOT_ID:
         return
 
-    if topic == "visited" and payload.startswith("visit:"):
+    if topic == "visited" and payload.startswith("visit"):
         x, y = map(int, payload[6:].split(","))
         if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE and grid[y][x] == 0:
             grid[y][x] = 2
 
-    elif topic == "clue" and payload.startswith("clue:"):
+    elif topic == "clue" and payload.startswith("clue"):
         x, y = map(int, payload[5:].split(","))
         if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
             clues.append((x, y))
             first_clue_seen = True
             update_prob_map()
 
-    elif topic == "alert" and payload.startswith("object:"):
+    elif topic == "alert" and payload.startswith("object"):
         # Peer found the object → stop immediately
         stop_all("peer_object")
 
-    elif topic == "status" and payload.startswith("intent:"):
+    elif topic == "status" and payload.startswith("intent"):
         ix, iy = map(int, payload[7:].split(","))
         other_intent = (ix, iy)
         other_intent_time_ms = time.ticks_ms()
@@ -267,7 +267,7 @@ def uart_rx_loop():
             b = uart.read(1)
             if not b:
                 continue
-            if b == b"\n":
+            if b == b"-":
                 line = buf.decode(errors="ignore").strip()
                 if line:
                     handle_uart_line(line)
