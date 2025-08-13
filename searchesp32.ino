@@ -148,9 +148,8 @@ void loop()
         if (c == '-') {
           // Full message received
           serialBuffer.trim(); // remove any unwanted whitespace
-
+            handlemsg(serialBuffer); //publish message to proper topic
           serialBuffer = "";
-          handlemsg(full_msg); //publish message to proper topic
         }
     }
 
@@ -176,13 +175,13 @@ void sendtoMQTT(String topic, String msg) {
     mqttClient.publish(alerttopic.c_str(), msg, 0, false);
   }
   else if (topic == "visited") {
-    mqttClient.publish(coordtopic.c_str(), msg, 0, false);
+    mqttClient.publish(visitedtopic.c_str(), msg, 0, false);
   }
   else if (topic == "status") {
     mqttClient.publish(statustopic.c_str(), msg, 0, false);
   }
     else if (topic == "clue") {
-    mqttClient.publish(statustopic.c_str(), msg, 0, false);
+    mqttClient.publish(cluetopic.c_str(), msg, 0, false);
   }
 }
 
