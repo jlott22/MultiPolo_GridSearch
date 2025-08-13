@@ -269,6 +269,7 @@ def uart_rx_loop():
                 continue
             if b == b"-":
                 line = buf.decode(errors="ignore").strip()
+                msg = line[:-1]
                 if line:
                     handle_uart_line(line)
                 buf = b""
