@@ -149,8 +149,6 @@ void loop()
           // Full message received
           serialBuffer.trim(); // remove any unwanted whitespace
 
-          // Remove trailing '-' and process
-          String full_msg = serialBuffer.substring(0, serialBuffer.length() - 1);
           serialBuffer = "";
           handlemsg(full_msg); //publish message to proper topic
         }
