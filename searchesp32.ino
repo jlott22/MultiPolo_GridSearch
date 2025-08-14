@@ -76,8 +76,6 @@ void setup()
     Serial.println("\nConnected to Wi-Fi!");
 
     // MQTT Client Setup
-    mqttClient.onConnect(onMqttConnect); // Register connection callback
-    mqttClient.onEvent(handleMQTT);      // Register event handler
     mqttClient.setURI(server);
     mqttClient.enableDebuggingMessages(); // Enable MQTT debug logs
     mqttClient.enableLastWillMessage(statustopic.c_str(), lastWillMessage); // Set Last Will message
@@ -163,7 +161,6 @@ void handlemsg(String line) {
   String topic = line.substring(0, divider);
   String message = line.substring(divider + 1);
 
-  // For debug
   Serial.print("Topic: "); Serial.println(topic);
   Serial.print("Message: "); Serial.println(message);
 
