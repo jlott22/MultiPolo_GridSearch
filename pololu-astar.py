@@ -328,12 +328,13 @@ def _update_intersection_debounce(readings):
     Return True once INTERSECTION_SAMPLES are seen in a row.
     """
     global _intersection_hits
-    if _outer_either_black(readings):
-        _intersection_hits += 1
-        return True ## TS temporary
-    else:
-        _intersection_hits = 0
-    return False ## TS temporary
+    while _intersection_hits < INTERSECTION_SAMPLES:
+        if _outer_either_black(readings):
+            _intersection_hits += 1
+        else:
+            _intersection_hits = 0
+            return False 
+    return True
 
 def bumped():
     """Return True only if a bumper is pressed continuously for ~40 ms."""
@@ -403,12 +404,12 @@ def move_forward_one_cell():
         total = readings[0] + readings[1] + readings[2] + readings[3] + readings[4]
         if total == 0:
             # line lost; creep straight (or call your recovery here)
-            motors.set_speeds(400, 400)
+            motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
             continue
 
         pos = weighted_position(readings)  # 0..4000 or None
         if pos is None:
-            motors.set_speeds(400, 400)
+            motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
             continue
 
         error = pos - LINE_CENTER
