@@ -243,6 +243,9 @@ def handle_uart_line(line):
     """
     global other_intent, other_intent_time_ms, first_clue_seen
 
+    # Trim whitespace or stray terminators and parse
+    line = line.strip()
+
     # Minimal parsing: "<sender>/<topic>:<payload>"
     try:
         left, payload = line.split("=", 1)
@@ -276,7 +279,7 @@ def handle_uart_line(line):
 def uart_rx_loop():
     """
     Background reader thread:
-      - Buffers bytes until newline
+      - Buffers bytes until '-' (our message terminator)
       - Calls handle_uart_line() per complete line
       - Respects the 'running' flag for clean exit
     """
@@ -287,8 +290,7 @@ def uart_rx_loop():
             if not b:
                 continue
             if b == b"-":
-                line = buf.decode(errors="ignore").strip()
-                msg = line[:-1]
+                line = buf.decode(errors="ignore")
                 if line:
                     handle_uart_line(line)
                 buf = b""
