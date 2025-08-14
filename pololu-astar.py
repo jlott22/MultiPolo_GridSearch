@@ -107,7 +107,6 @@ STRAIGHT_CREEP = 600     # forward speed while "locked" straight
 START_LOCK_MS = 500       # hold straight this long after function starts
 
 # persistent state for debounce/lock
-_intersection_hits = 0
 _lock_intersection = False  # when True, ignore P-correction and drive straight
 
 # Intent settings
@@ -318,23 +317,9 @@ def weighted_position(readings):
            + 3000*readings[3] + 4000*readings[4]) // total
     return pos
 
-def _outer_either_black(readings):
+def intersection_check(readings):
     """True if left outer OR right outer sees black (handles T-intersections)."""
     return (readings[0] >= BLACK_THRESH) or (readings[4] >= BLACK_THRESH)
-
-def _update_intersection_debounce(readings):
-    """
-    Count consecutive frames where an outer sensor is black.
-    Return True once INTERSECTION_SAMPLES are seen in a row.
-    """
-    global _intersection_hits
-    while _intersection_hits < INTERSECTION_SAMPLES:
-        if _outer_either_black(readings):
-            _intersection_hits += 1
-        else:
-            _intersection_hits = 0
-            return False 
-    return True
 
 def bumped():
     """Return True only if a bumper is pressed continuously for ~40 ms."""
@@ -382,21 +367,19 @@ def move_forward_one_cell():
 
         # 3) During initial lock window, always drive straight
         if time.ticks_diff(time.ticks_ms(), lock_release_time) < 0:
-            motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
+            motors.set_speeds(BASE_SPEED, BASE_SPEED)
             continue
 
         # 4) Candidate intersection? lock heading immediately
-        if _outer_either_black(readings) and not _lock_intersection:
+        if intersection_check(readings) and not _lock_intersection:
             _lock_intersection = True
-            _intersection_hits = 1  # count this frame
+            time.sleep(.1)
+            motors_off()
+            flash_green_LEDS(1)
+            return True
 
         # 5) While locked: confirm or keep rolling straight
         if _lock_intersection:
-            if _update_intersection_debounce(readings):
-                time.sleep(.1)
-                motors_off()
-                flash_green_LEDS(1)
-                return True
             motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
             continue
 
