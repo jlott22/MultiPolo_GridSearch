@@ -24,14 +24,23 @@
 
 '''
 TO-DO
-- intergrate with esp32
-- find out what map function deos in handle function
-
+UPDATED 13AUG
+-robot turns right when it should be at the end of grid.
+verify that its location is corret via nano terminal
+- robot doesnt fully turn left, may be hardware issue
+- fix intersection debounce. temporarily at 1
+-bump sensors do nothing when pressed. also view terminal to see if reading
+added red flash to traoubleshoot. does not flash when pressed
+- after set amount of intersection buzzer sounds and gives 5 reed flashes
+indicating power off. need to attach screen to see error.
+ possibly should have pololu write errors to a text file 
+- pololu does not adhere to lawnmower sweep after first row
 '''
 
 import time
 import _thread
 import heapq
+import sys
 from machine import UART, Pin
 from pololu_3pi_2040_robot import robot
 from pololu_3pi_2040_robot.extras import editions
@@ -41,7 +50,7 @@ from pololu_3pi_2040_robot.extras import editions
 # -----------------------------
 ROBOT_ID = "00"                         
 OTHER_ROBOT_ID = "01" 
-GRID_SIZE = 15
+GRID_SIZE = 5
 
 # Starting position & heading (grid coordinates, cardinal heading)
 # pos = (x, y)    heading = (dx, dy) where (0,-1)=N, (1,0)=E, (0,1)=S, (-1,0)=W
@@ -87,14 +96,14 @@ CENTER_STEP = 0.7        # cost per step toward the center when switching column
 SWITCH_COL_BASE = 0.2    # small base penalty for switching columns (pre-clue)
 MIDDLE_WHITE_THRESH = 250  # center sensor threshold for "white" (tune by calibration)
 # ---- Tuning knobs ----
-KP = 0.05                 # proportional gain around LINE_CENTER
-BASE_SPEED = 800          # nominal wheel speed
-MIN_SPD = 300             # clamp low (avoid stall)
-MAX_SPD = 1000            # clamp high
+KP = 0.5                # proportional gain around LINE_CENTER
+BASE_SPEED = 900          # nominal wheel speed
+MIN_SPD = 400             # clamp low (avoid stall)
+MAX_SPD = 1200            # clamp high
 LINE_CENTER = 2000        # weighted position target (0..4000)
 BLACK_THRESH = 600        # calibrated "black" threshold (0..1000)
-INTERSECTION_SAMPLES = 3  # consecutive reads to confirm intersection
-STRAIGHT_CREEP = 450      # forward speed while "locked" straight
+INTERSECTION_SAMPLES = 2  # consecutive reads to confirm intersection
+STRAIGHT_CREEP = 600     # forward speed while "locked" straight
 START_LOCK_MS = 500       # hold straight this long after function starts
 
 # persistent state for debounce/lock
@@ -108,34 +117,29 @@ INTENT_PENALTY = 8.0     # strong penalty to avoid stepping into the other's res
 # -----------------------------
 # Motion tuning (line follow / turns)
 # -----------------------------
-LINE_CENTER = 2000       # read_line() center value
-BASE_SPEED = 600
-KP = 0.05
-CELL_TRAVEL_MS = 650
 
-TURN_SPEED = 600
-YAW_90_MS = 0.40
-YAW_180_MS = 0.80
+TURN_SPEED = 900
+YAW_90_MS = 0.15
+YAW_180_MS = 0.3
 
 # -----------------------------
 # Hardware interfaces
 # -----------------------------
-bot = robot.robot()
-motors = bot.motors()
-line_sensors = bot.line_sensors()
-bump = bot.bump_sensors()
-rgb_leds = bot.RGBLEDs()
+motors = robot.Motors()
+line_sensors = robot.LineSensors()
+bump = robot.BumpSensors()
+rgb_leds = robot.RGBLEDs()
 rgb_leds.set_brightness(10)
 
 # ===========================================================
 # Utility: Motors & Stop Control
 # ===========================================================
 
-def flash_LEDS(num_times):
+def flash_green_LEDS(num_times):
     for _ in range(num_times):
         # Turn all LEDs green
         for led in range(6):
-            rgb_leds.set(led, [0, 200, 0])
+            rgb_leds.set(led, [0, 230, 0])
         rgb_leds.show()
         time.sleep_ms(100)
 
@@ -144,6 +148,22 @@ def flash_LEDS(num_times):
             rgb_leds.set(led, [0, 0, 0])
         rgb_leds.show()
         time.sleep_ms(100)
+        
+def flash_red_LEDS(num_times):
+    for _ in range(num_times):
+        # Turn all LEDs green
+        for led in range(6):
+            rgb_leds.set(led, [230, 0, 0])
+        rgb_leds.show()
+        time.sleep_ms(100)
+
+        # Turn all LEDs off
+        for led in range(6):
+            rgb_leds.set(led, [0, 0, 0])
+        rgb_leds.show()
+        time.sleep_ms(100)
+        
+flash_green_LEDS(1)
     
 def motors_off():
     """Hard stop both wheels (safety: call in finally/stop paths)."""
@@ -160,7 +180,6 @@ def stop_all(reason=""):
     found_object = True
     running = False
     motors_off()
-    flash_LEDS(5)
 
 def stop_and_alert_object():
     """
@@ -170,6 +189,7 @@ def stop_and_alert_object():
     publish_object(pos[0], pos[1])
     stop_all("object")
 
+flash_green_LEDS(1)
 # ===========================================================
 # UART Messaging
 # Format: "<ID>/<topic>:<payload>\n"
@@ -281,7 +301,7 @@ def uart_rx_loop():
 # ===========================================================
 # Sensing & Motion
 # ===========================================================
-
+flash_green_LEDS(1)
 def _clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
 
@@ -310,16 +330,19 @@ def _update_intersection_debounce(readings):
     global _intersection_hits
     if _outer_either_black(readings):
         _intersection_hits += 1
+        return True ## TS temporary
     else:
         _intersection_hits = 0
-    return _intersection_hits >= INTERSECTION_SAMPLES
+    return False ## TS temporary
 
 def bumped():
     """Return True only if a bumper is pressed continuously for ~40 ms."""
-    if not (bump.read_left() or bump.read_right()):
+    if not (bump.left_is_pressed() or bump.right_is_pressed()):
         return False
-    time.sleep_ms(40)
-    return bump.read_left() or bump.read_right()
+    if bump.left_is_pressed() or bump.right_is_pressed():
+        flash_red_LEDS(1)
+        return True
+
 
 def move_forward_one_cell():
     """
@@ -364,7 +387,9 @@ def move_forward_one_cell():
         # 5) While locked: confirm or keep rolling straight
         if _lock_intersection:
             if _update_intersection_debounce(readings):
+                time.sleep(.1)
                 motors_off()
+                flash_green_LEDS(1)
                 return True
             motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
             continue
@@ -442,6 +467,7 @@ def at_intersection_and_white():
     centered = abs(pos - LINE_CENTER) < 150
     return center_white and centered
 
+flash_green_LEDS(1)
 # ===========================================================
 # Heading / Turning (cardinal NSEW)
 # ===========================================================
@@ -464,7 +490,7 @@ def rotate_degrees(deg):
         if running: time.sleep(YAW_90_MS)
 
     elif deg == -90:
-        motors.set_speeds(-TURN_SPEED, TURN_SPEED)
+        motors.set_speeds(-TURN_SPEED*2, TURN_SPEED*2)
         if running: time.sleep(YAW_90_MS)
 
     motors_off()
@@ -493,7 +519,7 @@ def turn_towards(cur, nxt):
 
     rotate_degrees(deg)
     heading = target
-
+flash_green_LEDS(1)
 # ===========================================================
 # Reward Model (clues) & Pre-Clue Serpentine Bias
 # ===========================================================
@@ -587,7 +613,7 @@ def pick_goal():
         if unknowns:
             best = min(unknowns, key=lambda c: abs(c[0] - pos[0]) + abs(c[1] - pos[1]))
     return best
-
+flash_green_LEDS(1)
 # ===========================================================
 # A* Planner (4-neighbor grid, cardinal)
 # ===========================================================
@@ -651,6 +677,7 @@ def a_star(start, goal):
     path.reverse()
     return [start] + path
 
+flash_green_LEDS(1)
 # ===========================================================
 # Main Search Loop
 # ===========================================================
@@ -714,19 +741,20 @@ def search_loop():
 
     finally:
         motors_off()   # safety: ensure motors are cut even on exceptions
-
+flash_green_LEDS(1)
 # ===========================================================
 # Entry Point
 # ===========================================================
-if __name__ == "__main__":
-    flash_LEDS(5)
-    # Start the single UART RX thread (clean exit when 'running' goes False)
-    _thread.start_new_thread(uart_rx_loop, ())
 
-    # Kick off the mission
-    try:
-        search_loop()
-    finally:
-        # Ensure absolutely everything is stopped
-        stop_all("finally")
-        time.sleep_ms(200)  # give RX thread time to fall out cleanly
+flash_red_LEDS(5)
+# Start the single UART RX thread (clean exit when 'running' goes False)
+_thread.start_new_thread(uart_rx_loop, ())
+
+# Kick off the mission
+try:
+    search_loop()
+finally:
+    # Ensure absolutely everything is stopped
+    stop_all("finally")
+    flash_red_LEDS(5)
+    time.sleep_ms(200)  # give RX thread time to fall out cleanly
