@@ -337,11 +337,16 @@ def _update_intersection_debounce(readings):
 
 def bumped():
     """Return True only if a bumper is pressed continuously for ~40 ms."""
-    if not (bump.left_is_pressed() or bump.right_is_pressed()):
-        return False
+    bump.read()
     if bump.left_is_pressed() or bump.right_is_pressed():
+        start = time.ticks_ms()
+        while time.ticks_diff(time.ticks_ms(), start) < 40:
+            bump.read()
+            if not (bump.left_is_pressed() or bump.right_is_pressed()):
+                return False
         flash_red_LEDS(1)
         return True
+    return False
 
 
 def move_forward_one_cell():
