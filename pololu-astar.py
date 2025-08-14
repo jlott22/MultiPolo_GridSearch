@@ -53,13 +53,13 @@ OTHER_ROBOT_ID = "01"
 GRID_SIZE = 5
 
 # Starting position & heading (grid coordinates, cardinal heading)
-# pos = (x, y)    heading = (dx, dy) where (0,-1)=N, (1,0)=E, (0,1)=S, (-1,0)=W
+# pos = (x, y)    heading = (dx, dy) where (0,1)=N, (1,0)=E, (0,-1)=S, (-1,0)=W
 if ROBOT_ID == "00":
-    START_POS = (0, 0) #southern bot 00 starts facing north
-    START_HEADING = (0, -1)
-else:
-    START_POS = (GRID_SIZE -1 , GRID_SIZE -1) #northern bot, 01, starts facing south
+    START_POS = (0, 0)  # southern bot 00 starts facing north
     START_HEADING = (0, 1)
+else:
+    START_POS = (GRID_SIZE -1 , GRID_SIZE -1)  # northern bot, 01, starts facing south
+    START_HEADING = (0, -1)
 
 # UART0 for ESP32 communication (TX=GP28, RX=GP29)
 uart = UART(0, baudrate=230400, tx=28, rx=29)
@@ -71,6 +71,12 @@ grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]  # 0=unknown, 1
 prob_map = [[1 / (GRID_SIZE * GRID_SIZE) for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
 reward_map = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
 clues = []                            # list of (x, y) clue cells
+
+
+def row(y):
+    """Convert Cartesian y (origin at bottom) to list index."""
+    return GRID_SIZE - 1 - y
+
 
 pos = [START_POS[0], START_POS[1]]    # current grid pos
 heading = (START_HEADING[0], START_HEADING[1])
@@ -257,8 +263,8 @@ def handle_uart_line(line):
 
     if topic == "visited" and payload.startswith("visit"):
         x, y = map(int, payload[6:].split(","))
-        if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE and grid[y][x] == 0:
-            grid[y][x] = 2
+        if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE and grid[row(y)][x] == 0:
+            grid[row(y)][x] = 2
 
     elif topic == "clue" and payload.startswith("clue"):
         x, y = map(int, payload[5:].split(","))
@@ -440,7 +446,7 @@ def calibrate():
     if move_forward_one_cell():
         pos[0], pos[1] = START_POS
         if 0 <= pos[0] < GRID_SIZE and 0 <= pos[1] < GRID_SIZE:
-            grid[pos[1]][pos[0]] = 2
+            grid[row(pos[1])][pos[0]] = 2
 
     motors_off()
     
@@ -497,7 +503,7 @@ def turn_towards(cur, nxt):
     dx, dy = nxt[0] - cur[0], nxt[1] - cur[1]
     target = (dx, dy)
 
-    dirs = [(0,-1),(1,0),(0,1),(-1,0)]   # N,E,S,W (clockwise)
+    dirs = [(0,1),(1,0),(0,-1),(-1,0)]   # N,E,S,W (clockwise)
     i = dirs.index(heading)
     j = dirs.index(target)
     delta = (j - i) % 4
@@ -523,16 +529,16 @@ def update_prob_map():
     """
     for y in range(GRID_SIZE):
         for x in range(GRID_SIZE):
-            if grid[y][x] == 2:  # visited
-                prob_map[y][x] = 0.0
-                reward_map[y][x] = 0.0
+            if grid[row(y)][x] == 2:  # visited
+                prob_map[row(y)][x] = 0.0
+                reward_map[row(y)][x] = 0.0
                 continue
             base = 1 / (GRID_SIZE * GRID_SIZE)
             clue_sum = 0.0
             for (cx, cy) in clues:
                 clue_sum += 5 / (1 + abs(x - cx) + abs(y - cy))
-            prob_map[y][x] = base + clue_sum
-            reward_map[y][x] = prob_map[y][x] * 5
+            prob_map[row(y)][x] = base + clue_sum
+            reward_map[row(y)][x] = prob_map[row(y)][x] * 5
 
 def edge_distance_from_side(x):
     """
@@ -587,9 +593,9 @@ def pick_goal():
     best_val = -1e9
     for y in range(GRID_SIZE):
         for x in range(GRID_SIZE):
-            if grid[y][x] != 0:
+            if grid[row(y)][x] != 0:
                 continue
-            val = reward_map[y][x]
+            val = reward_map[row(y)][x]
             if not first_clue_seen:
                 # Static nudge to keep targets in outer strips pre-clue
                 # (dynamic step cost in A* does the heavy lifting)
@@ -600,7 +606,7 @@ def pick_goal():
 
     if best is None:
         # Fallback: nearest unknown
-        unknowns = [(x, y) for y in range(GRID_SIZE) for x in range(GRID_SIZE) if grid[y][x] == 0]
+        unknowns = [(x, y) for y in range(GRID_SIZE) for x in range(GRID_SIZE) if grid[row(y)][x] == 0]
         if unknowns:
             best = min(unknowns, key=lambda c: abs(c[0] - pos[0]) + abs(c[1] - pos[1]))
     return best
@@ -632,7 +638,7 @@ def a_star(start, goal):
             nx, ny = cx + dx, cy + dy
             if not (0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE):
                 continue
-            if grid[ny][nx] == 1:  # reserved for obstacles (not used yet)
+            if grid[row(ny)][nx] == 1:  # reserved for obstacles (not used yet)
                 continue
 
             new_cost = cost_so_far[current] + 1
@@ -642,7 +648,7 @@ def a_star(start, goal):
                 new_cost += 1
 
             # Reward shaping (prefer high reward)
-            new_cost -= reward_map[ny][nx]
+            new_cost -= reward_map[row(ny)][nx]
 
             # Pre-clue: penalize inward hops (serpentine)
             new_cost += centerward_step_cost(cx, nx)
@@ -719,7 +725,7 @@ def search_loop():
 
             # Arrived → update state & publish
             pos[0], pos[1] = nxt[0], nxt[1]
-            grid[pos[1]][pos[0]] = 2
+            grid[row(pos[1])][pos[0]] = 2
             publish_position()
             publish_visited(pos[0], pos[1])
 
