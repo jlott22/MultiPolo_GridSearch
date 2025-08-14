@@ -164,10 +164,23 @@ void handlemsg(String line) {
   Serial.print("Topic: "); Serial.println(topic);
   Serial.print("Message: "); Serial.println(message);
 
-  sendtoMQTT(topic, message);
+  int slashIndex = topic.indexOf('/');
+  if (slashIndex == -1) {
+    return;
+  }
+  String idSegment = topic.substring(0, slashIndex);
+  if (idSegment != clientID) {
+    return;
+  }
+  String topicSegment = topic.substring(slashIndex + 1);
+
+  sendtoMQTT(topicSegment, message);
 }
 
 void sendtoMQTT(String topic, String msg) {
+  if (topic.startsWith(clientID + "/")) {
+    topic = topic.substring(clientID.length() + 1);
+  }
   if (topic == "alert") {
     mqttClient.publish(alerttopic.c_str(), msg, 0, false);
   }
@@ -177,7 +190,7 @@ void sendtoMQTT(String topic, String msg) {
   else if (topic == "status") {
     mqttClient.publish(statustopic.c_str(), msg, 0, false);
   }
-    else if (topic == "clue") {
+  else if (topic == "clue") {
     mqttClient.publish(cluetopic.c_str(), msg, 0, false);
   }
 }
