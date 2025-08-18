@@ -187,6 +187,7 @@ flash_LEDS(GREEN,1)
 #   0013,4;0,1- robot 00 status update position (3,4), heading north
 #   00365-
 # ===========================================================
+
 def uart_send(topic, payload):
     """Send a single line to ESP32; it forwards to MQTT."""
     line = f"{topic}.{payload}-"
@@ -194,26 +195,26 @@ def uart_send(topic, payload):
 
 def publish_position():
     """Publish current pose (for UI/diagnostics)."""
-    uart_send(1, f"{pos[0]},{pos[1]};{heading[0]},{heading[1]}")
+    uart_send('1', f"{pos[0]},{pos[1]};{heading[0]},{heading[1]}")
 
 def publish_visited(x, y):
     """Publish that we visited cell (x,y)."""
-    uart_send(2, f"{x},{y}")
+    uart_send('2', f"{x},{y}")
 
 def publish_clue(x, y):
     """Publish a clue at (x,y)."""
-    uart_send(3, f"{x},{y}")
+    uart_send('3', f"{x},{y}")
 
 def publish_object(x, y):
     """Publish that we found the object at (x,y)."""
-    uart_send(4, f"{x},{y}")
+    uart_send('4', f"{x},{y}")
 
 def publish_intent(x, y):
     """
     Publish our intended next cell (reservation).
     Other robot will penalize stepping into this cell for INTENT_TTL_MS.
     """
-    uart_send(5, f"{x},{y}")
+    uart_send('5', f"{x},{y}")
 
 def handle_uart_line(line):
     """
