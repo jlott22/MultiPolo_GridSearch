@@ -10,10 +10,17 @@ const char *server = "mqtt://192.168.1.10:1883"; // MQTT server IP
 
 // Robot-specific identifiers
 String clientID = "00";
-String visitedtopic = clientID + "/visited"; 
-String statustopic = clientID + "/status";  
-String alerttopic = clientID + "/alert";  
-String cluetopic = clientID + "/clue";  
+String pubvisitedtopic = clientID + "2"; //VISITED
+String pubpositiontopic = clientID + "1";  //STATUS FOR CURRENT POSITIONING
+String pubalerttopic = clientID + "4";  //ALERT FOR OBJECTS FOUND
+String pubcluetopic = clientID + "3";  //TOPIC FOR CLUES/FOOTPRINTS/JEWELS FOUND
+String pubintenttopic = clientID + "5";  //STATUS FOR CURRENT INTENT
+String otherID = "01";
+String subvisitedtopic = otherID + "2"; 
+String subpositiontopic = otherID + "1";  
+String subalerttopic = otherID + "4";  
+String subcluetopic = otherID + "3";  
+String subintenttopic = otherID + "5";  //STATUS FOR CURRENT INTENT
 const char *lastWillMessage = "disconnected"; // Last Will message
 
 ESP32MQTTClient mqttClient; // MQTT client object
@@ -31,31 +38,28 @@ void onMqttConnect(esp_mqtt_client_handle_t client)
 {
     if (mqttClient.isMyTurn(client))
     {
-        mqttClient.publish(statustopic.c_str(), "connected", 0, false);
-        Serial.println("Connected to MQTT Broker!");
+        mqttClient.publish(pubpositiontopic.c_str(), "connected", 0, false);
+        Serial.println("Connected to MQTT Broker first time");
 
-        mqttClient.subscribe(cluetopic.c_str(), [](const String &payload)
-                             {
-                                 Serial.println("Clue: " + payload);
-                                 robotSerial.println(payload);
-                             });
-        mqttClient.subscribe(alerttopic.c_str(), [](const String &payload)
-                             {
-                                 Serial.println("Alert: " + payload);
-                                 robotSerial.println(payload);
-                             });
-        mqttClient.subscribe(visitedtopic.c_str(), [](const String &payload)
-                             {
-                                 Serial.println("Visited: " + payload);
-                                 robotSerial.println(payload);
-                             });
-        mqttClient.subscribe(statustopic.c_str(), [](const String &payload)
-                             {
-                                 Serial.println("Status: " + payload);
-                                 robotSerial.println(payload);
-                             });
+        // sub to MQTT topics
+        mqttClient.subscribe(subpositiontopic, [&](String &payload) {
+          frameToRobot('1', otherID, payload);
+        });
+        mqttClient.subscribe(subvisitedtopic, [&](String &payload) {
+          frameToRobot('2', otherID, payload);
+        });
+        mqttClient.subscribe(subcluetopic, [&](String &payload) {
+          frameToRobot('3', otherID, payload);
+        });
+        mqttClient.subscribe(subalerttopic, [&](String &payload) {
+          frameToRobot('4', otherID, payload);
+        });
+        mqttClient.subscribe(subintenttopic, [&](String &payload) {
+          frameToRobot('5', otherID, payload);
+        });
 
-        Serial.println("Subscribed to robot specific and broadcast command topics");
+
+        Serial.println("Subscribed to topics first time");
     }
 }
 
@@ -78,7 +82,7 @@ void setup()
     // MQTT Client Setup
     mqttClient.setURI(server);
     mqttClient.enableDebuggingMessages(); // Enable MQTT debug logs
-    mqttClient.enableLastWillMessage(statustopic.c_str(), lastWillMessage); // Set Last Will message
+    mqttClient.enableLastWillMessage(pubpositiontopic.c_str(), lastWillMessage); // Set Last Will message
     mqttClient.setKeepAlive(3); // Keep connection alive with a 5-second timeout
 
     // Start the MQTT loop
@@ -94,7 +98,7 @@ void loop()
         WiFi.begin(ssid, pass);
         while (WiFi.status() != WL_CONNECTED)
         {
-            delay(1000);
+            delay(3000);
             Serial.print(".");
         }
         Serial.println("\nWi-Fi reconnected!");
@@ -110,29 +114,25 @@ void loop()
             lastReconnectAttempt = currentMillis;
 
             Serial.println("Reconnected to MQTT broker.");
-            mqttClient.publish(statustopic.c_str(), "Reconnected", 0, false);
+            mqttClient.publish(pubpositiontopic.c_str(), "Reconnected", 0, false);
 
             // Resubscribe to topics after reconnection
-        mqttClient.subscribe(cluetopic.c_str(), [](const String &payload)
-                             {
-                                 Serial.println("Clue: " + payload);
-                                 robotSerial.println(payload);
-                             });
-        mqttClient.subscribe(alerttopic.c_str(), [](const String &payload)
-                             {
-                                 Serial.println("Alert: " + payload);
-                                 robotSerial.println(payload);
-                             });
-        mqttClient.subscribe(visitedtopic.c_str(), [](const String &payload)
-                             {
-                                 Serial.println("Visited: " + payload);
-                                 robotSerial.println(payload);
-                             });
-        mqttClient.subscribe(statustopic.c_str(), [](const String &payload)
-                             {
-                                 Serial.println("Status: " + payload);
-                                 robotSerial.println(payload);
-                             });
+            mqttClient.subscribe(subpositiontopic, [&](String &payload) {
+              frameToRobot('1', otherID, payload);
+            });
+            mqttClient.subscribe(subvisitedtopic, [&](String &payload) {
+              frameToRobot('2', otherID, payload);
+            });
+            mqttClient.subscribe(subcluetopic, [&](String &payload) {
+              frameToRobot('3', otherID, payload);
+            });
+            mqttClient.subscribe(subalerttopic, [&](String &payload) {
+              frameToRobot('4', otherID, payload);
+            });
+            mqttClient.subscribe(subintenttopic, [&](String &payload) {
+              frameToRobot('5', otherID, payload);
+            });
+
         }
     }
 
@@ -146,8 +146,11 @@ void loop()
         if (c == '-') {
           // Full message received
           serialBuffer.trim(); // remove any unwanted whitespace
-            handlemsg(serialBuffer); //publish message to proper topic
+
+          // Remove trailing '-' and process
+          String full_msg = serialBuffer.substring(0, serialBuffer.length());
           serialBuffer = "";
+          handlemsg(full_msg); //publish message to proper topic
         }
     }
 
@@ -155,46 +158,53 @@ void loop()
 }
 
 void handlemsg(String line) {
-  int divider = line.indexOf('='); //indexes where the message divider (=) is in the string
+  int divider = line.indexOf('.'); //indexes where the message divider (.) is in the string
   if (divider == -1) return;  // dont process ill formed message
 
   String topic = line.substring(0, divider);
   String message = line.substring(divider + 1);
 
-  Serial.print("Topic: "); Serial.println(topic);
-  Serial.print("Message: "); Serial.println(message);
+  // For debug
+  Serial.print("tout: "); Serial.println(topic);
 
-  int slashIndex = topic.indexOf('/');
-  if (slashIndex == -1) {
-    return;
-  }
-  String idSegment = topic.substring(0, slashIndex);
-  if (idSegment != clientID) {
-    return;
-  }
-  String topicSegment = topic.substring(slashIndex + 1);
-
-  sendtoMQTT(topicSegment, message);
+  sendtoMQTT(topic, message);
 }
+
+void frameToRobot = (char topicDigit, const String &senderID, const String &payload) {
+  // We keep the '-' end-to-end. If payload already ends with '-', don't add a second one.
+  bool hasTerminator = payload.length() && payload.charAt(payload.length()-1) == '-';
+
+  robotSerial.print(senderID);       // "00", "01", ...
+  robotSerial.print(topicDigit);     // '1'..'5'
+  robotSerial.print('.');
+  robotSerial.print(payload);        // very likely already ends with '-'
+  if (!hasTerminator) robotSerial.print('-');
+};
+
 
 void sendtoMQTT(String topic, String msg) {
-  if (topic.startsWith(clientID + "/")) {
-    topic = topic.substring(clientID.length() + 1);
+  if (topic == "4") {
+    mqttClient.publish(pubalerttopic.c_str(), msg, 0, false);
   }
-  if (topic == "alert") {
-    mqttClient.publish(alerttopic.c_str(), msg, 0, false);
+  else if (topic == "2") {
+    mqttClient.publish(pubvisitedtopic.c_str(), msg, 0, false);
   }
-  else if (topic == "visited") {
-    mqttClient.publish(visitedtopic.c_str(), msg, 0, false);
+  else if (topic == "1") {
+    mqttClient.publish(pubpositiontopic.c_str(), msg, 0, false);
   }
-  else if (topic == "status") {
-    mqttClient.publish(statustopic.c_str(), msg, 0, false);
+  else if (topic == "3") {
+    mqttClient.publish(pubcluetopic.c_str(), msg, 0, false);
   }
-  else if (topic == "clue") {
-    mqttClient.publish(cluetopic.c_str(), msg, 0, false);
+  else if (topic == "5") {
+    mqttClient.publish(pubintenttopic.c_str(), msg, 0, false);
   }
 }
 
+void handleMQTT(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
+{
+    auto *event = static_cast<esp_mqtt_event_handle_t>(event_data);
+    mqttClient.onEventCallback(event); // Pass events to the client
+}
 void handleMQTT(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
     auto *event = static_cast<esp_mqtt_event_handle_t>(event_data);
