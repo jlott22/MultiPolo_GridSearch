@@ -458,6 +458,8 @@ def calibrate():
     #    move the robot is sitting on our true starting cell (defined by
     #    ``START_POS`` at the top of the file) so overwrite any temporary
     #    position with that constant and mark the cell visited.
+    bump.calibrate()
+    time.sleep_ms(10)
     move_forward_flag = True
     while move_forward_flag:
         uart_service()
