@@ -101,6 +101,7 @@ MIDDLE_WHITE_THRESH = 800  # center sensor threshold for "white" (tune by calibr
 VISITED_STEP_PENALTY = 1.2
 KP = 0.5                # proportional gain around LINE_CENTER
 BASE_SPEED = 800          # nominal wheel speed
+CALIBRATE_SPEED = 950       #speed to rotate when calibrating
 MIN_SPD = 400             # clamp low (avoid stall)
 MAX_SPD = 1200            # clamp high
 LINE_CENTER = 2000        # weighted position target (0..4000)
@@ -447,7 +448,7 @@ def calibrate():
             motors_off()
             return
 
-        motors.set_speeds(1100, -1100)
+        motors.set_speeds(CALIBRATE_SPEED, -CALIBRATE_SPEED)
         line_sensors.calibrate()
         time.sleep_ms(10)
 
@@ -457,10 +458,13 @@ def calibrate():
     #    move the robot is sitting on our true starting cell (defined by
     #    ``START_POS`` at the top of the file) so overwrite any temporary
     #    position with that constant and mark the cell visited.
-    if move_forward_one_cell():
-        pos[0], pos[1] = START_POS
-        if 0 <= pos[0] < GRID_SIZE and 0 <= pos[1] < GRID_SIZE:
-            grid[row(pos[1])][pos[0]] = 2
+    move_forward_flag = True
+    while move_forward_flag:
+        uart_service()
+        time.sleep_ms(1)
+    pos[0], pos[1] = START_POS
+    if 0 <= pos[0] < GRID_SIZE and 0 <= pos[1] < GRID_SIZE:
+        grid[row(pos[1])][pos[0]] = 2
 
     motors_off()
     
