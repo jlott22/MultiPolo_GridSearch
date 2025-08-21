@@ -43,8 +43,8 @@ from pololu_3pi_2040_robot.extras import editions
 # -----------------------------
 # Robot identity & start pose
 # -----------------------------
-ROBOT_ID = "00"                         
-OTHER_ROBOT_ID = "01" 
+ROBOT_ID = "01"                         
+OTHER_ROBOT_ID = "00" 
 GRID_SIZE = 5
 
 # Starting position & heading (grid coordinates, cardinal heading)
@@ -57,7 +57,7 @@ else:
     START_HEADING = (0, -1)
 
 # UART0 for ESP32 communication (TX=GP28, RX=GP29)
-uart = UART(0, baudrate=230400, tx=28, rx=29)
+uart = UART(0, baudrate=115200, tx=28, rx=29)
 
 # -----------------------------
 # Grid / Maps / Shared State
@@ -80,6 +80,7 @@ heading = (START_HEADING[0], START_HEADING[1])
 running = True                         # master run flag
 found_object = False                   # set True on bump or peer alert
 first_clue_seen = False                # once True, we disable lawn-mower bias
+move_forward_flag = False
 
 # Intent reservation from the other robot
 other_intent = None                    # (x, y) or None
@@ -113,6 +114,19 @@ _lock_intersection = False  # when True, ignore P-correction and drive straight
 # Intent settings
 INTENT_TTL_MS = 1200     # reservation lifetime
 INTENT_PENALTY = 8.0     # strong penalty to avoid stepping into the other's reserved cell
+
+#UART handling globals
+# ---------- ring buffer ----------
+RB_SIZE = 1024
+buf = bytearray(RB_SIZE)
+head = 0
+tail = 0
+DELIM = ord('-')
+
+# ---------- message builder ----------
+MSG_BUF_SIZE = 256
+msg_buf = bytearray(MSG_BUF_SIZE)
+msg_len = 0 
 
 # -----------------------------
 # Motion tuning (line follow / turns)
@@ -187,7 +201,6 @@ flash_LEDS(GREEN,1)
 #   0013,4;0,1- robot 00 status update position (3,4), heading north
 #   00365-
 # ===========================================================
-
 def uart_send(topic, payload):
     """Send a single line to ESP32; it forwards to MQTT."""
     line = f"{topic}.{payload}-"
@@ -216,7 +229,7 @@ def publish_intent(x, y):
     """
     uart_send('5', f"{x},{y}")
 
-def handle_uart_line(line):
+def handle_msg(line):
     """
     Parse and apply incoming messages from the other robot.
 
@@ -232,9 +245,6 @@ def handle_uart_line(line):
       - other status fields we don't currently need
     """
     global other_intent, other_intent_time_ms, first_clue_seen
-
-    # Trim whitespace or stray terminators and parse
-    line = line.strip()
 
     # Minimal parsing: "<sender>/<topic>:<payload>"
     try:
@@ -270,22 +280,47 @@ def handle_uart_line(line):
         other_intent = (ix, iy)
         other_intent_time_ms = time.ticks_ms()
 
-def uart_rx_loop():
-    buf = bytearray()
+# ---------- ring buffer helpers ----------
+def rb_put_byte(b):
+    """Push one byte into the ring buffer."""
+    global tail, head
+    buf[tail] = b
+    nxt = (tail + 1) % RB_SIZE
+    if nxt == head:                # buffer full, drop oldest
+        head = (head + 1) % RB_SIZE
+    tail = nxt
+
+def rb_pull_into_msg():
+    """Pull bytes into message buffer until '-' is found."""
+    global head, tail, msg_len
+    if head == tail:
+        return None
+    while head != tail:
+        b = buf[head]
+        head = (head + 1) % RB_SIZE
+        if b == DELIM:  # complete frame
+            s = msg_buf[:msg_len].decode('utf-8', 'ignore').strip()
+            msg_len = 0
+            return s
+        if msg_len < MSG_BUF_SIZE:
+            msg_buf[msg_len] = b
+            msg_len += 1
+    return None
+
+# ---------- UART service ----------
+def uart_service():
+    """Read and parse any complete messages from UART."""
+    data = uart.read()     # returns None or bytes object
+    print('Data Read: ', data)
+    if not data:
+        return
+    for b in data:         # iterate over bytes
+        rb_put_byte(b)
     while True:
-        if uart.any():
-            b = uart.read(1)
-            if not b:
-                continue
-            if b == b'-':
-                line = buf.decode(errors="ignore").strip()
-                if line:
-                    handle_uart_line(line)   # line has NO trailing '-'; uart layer handled it
-                buf = bytearray()
-            else:
-                buf.extend(b)
-        else:
-            time.sleep_ms(1)
+        msg = rb_pull_into_msg()
+        if msg is None:
+            break
+        handle_msg(msg)
 
 # ===========================================================
 # Sensing & Motion
@@ -340,55 +375,57 @@ def move_forward_one_cell():
     # Initial lock to roll straight for half a second
     lock_release_time = time.ticks_add(time.ticks_ms(), START_LOCK_MS)
 
+    #outter infinite loop to keep thread check for activation
     while running:
-        # 1) Safety/object check
-        if bumped():
-            stop_and_alert_object()
-            motors_off()
-            return False
-
-        # 2) Read sensors
-        readings = line_sensors.read_calibrated()
-
-        # 3) During initial lock window, always drive straight
-        if time.ticks_diff(time.ticks_ms(), lock_release_time) < 0:
-            motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
-            continue
-
-        # 4) Candidate intersection? lock heading immediately
-        if intersection_check(readings) and not _lock_intersection:
-            _lock_intersection = True
-            motors_off()
-            flash_LEDS(GREEN,1)
         
-            return True
+        while move_forward_flag:
+            # 1) Safety/object check
+            if bumped():
+                stop_and_alert_object()
+                motors_off()
+                move_forward_flag = False
 
-        # 5) While locked: confirm or keep rolling straight
-        if _lock_intersection:
-            motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
-            continue
+            # 2) Read sensors
+            readings = line_sensors.read_calibrated()
 
-        # 6) Normal P-control when not locked
-        total = readings[0] + readings[1] + readings[2] + readings[3] + readings[4]
-        if total == 0:
-            # line lost; creep straight (or call your recovery here)
-            motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
-            continue
+            # 3) During initial lock window, always drive straight
+            if time.ticks_diff(time.ticks_ms(), lock_release_time) < 0:
+                motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
+                continue
 
-        pos = weighted_position(readings)  # 0..4000 or None
-        if pos is None:
-            motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
-            continue
+            # 4) Candidate intersection? lock heading immediately
+            if intersection_check(readings) and not _lock_intersection:
+                _lock_intersection = True
+                motors_off()
+                flash_LEDS(GREEN,1)
 
-        error = pos - LINE_CENTER
-        correction = int(KP * error)
+                move_forward_flag = False
 
-        left  = _clamp(BASE_SPEED + correction, MIN_SPD, MAX_SPD)
-        right = _clamp(BASE_SPEED - correction, MIN_SPD, MAX_SPD)
-        motors.set_speeds(left, right)
+            # 5) While locked: confirm or keep rolling straight
+            if _lock_intersection:
+                motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
+                continue
 
-    motors_off()
-    return False
+            # 6) Normal P-control when not locked
+            total = readings[0] + readings[1] + readings[2] + readings[3] + readings[4]
+            if total == 0:
+                # line lost; creep straight (or call your recovery here)
+                motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
+                continue
+
+            pos = weighted_position(readings)  # 0..4000 or None
+            if pos is None:
+                motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
+                continue
+
+            error = pos - LINE_CENTER
+            correction = int(KP * error)
+
+            left  = _clamp(BASE_SPEED + correction, MIN_SPD, MAX_SPD)
+            right = _clamp(BASE_SPEED - correction, MIN_SPD, MAX_SPD)
+            motors.set_speeds(left, right)
+
+        time.sleep_ms(300)
 
 def calibrate():
     """Calibrate line sensors then advance to the first intersection.
@@ -707,9 +744,11 @@ def search_loop():
             turn_towards(tuple(pos), nxt)
             if not running or found_object:
                 break
-
-            if not move_forward_one_cell():
-                break  # Bump or stop condition handled inside
+            
+            move_forward_flag = True
+            while move_forward_flag:
+                uart_service()
+                time.sleep_ms(3)
 
             # Arrived → update state & publish
             pos[0], pos[1] = nxt[0], nxt[1]
@@ -731,15 +770,16 @@ flash_LEDS(GREEN,1)
 # Entry Point
 # ===========================================================
 
-flash_LEDS(RED,5)
+flash_LEDS(RED,1)
 # Start the single UART RX thread (clean exit when 'running' goes False)
-_thread.start_new_thread(uart_rx_loop, ())
+_thread.start_new_thread(move_forward_one_cell, ())
 
 # Kick off the mission
 try:
     search_loop()
 finally:
     # Ensure absolutely everything is stopped
+    running = False
     stop_all()
     flash_LEDS(RED,5)
     time.sleep_ms(200)  # give RX thread time to fall out cleanly
