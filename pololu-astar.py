@@ -75,6 +75,8 @@ def row(y):
 
 pos = [START_POS[0], START_POS[1]]    # current grid pos
 heading = (START_HEADING[0], START_HEADING[1])
+intended_pos = [START_POS[0], START_POS[1]]    # intended next pos
+
 
 # Run flags (checked by loops/threads for clean exits)
 running = True                         # master run flag
@@ -190,7 +192,7 @@ def stop_and_alert_object():
     Called when THIS robot detects the object via bump.
     Publishes alert and performs a global stop.
     """
-    publish_object(pos[0], pos[1])
+    publish_object(intended_pos[0], intended_pos[1])
     stop_all()
 
 flash_LEDS(GREEN,1)
@@ -720,7 +722,7 @@ def search_loop():
       6) Repeat until object found or no goals remain
     Always cuts motors in a finally block.
     """
-    global first_clue_seen
+    global first_clue_seen, intended_pos
 
     try:
         calibrate()
@@ -738,6 +740,8 @@ def search_loop():
                 break
 
             nxt = path[1]
+
+            intended_pos = [nxt[0], nxt[1]]
 
             # Reserve the next cell so the other robot yields if it wanted the same
             publish_intent(nxt[0], nxt[1])
