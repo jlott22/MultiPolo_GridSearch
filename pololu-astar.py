@@ -34,6 +34,7 @@ import time
 import _thread
 import heapq
 import sys
+import gc
 from machine import UART, Pin
 from pololu_3pi_2040_robot import robot
 from pololu_3pi_2040_robot.extras import editions
@@ -261,10 +262,13 @@ def handle_msg(line):
     elif topic == "3":   #clue
         x, y = map(int, payload.split(","))
         if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
-            clues.append((x, y))
-            first_clue_seen = True
-            update_prob_map()
-            print('clue updated')
+            clue = (x, y)
+            if clue not in clues:
+                clues.append(clue)
+                first_clue_seen = True
+                update_prob_map()
+                gc.collect()
+                print('clue updated')
 
     elif topic == "4": #object
         # Peer found the object → stop immediately
@@ -722,11 +726,17 @@ def search_loop():
         publish_visited(pos[0], pos[1])
         
         while running and not found_object:
+            # free any unused memory from previous iteration to avoid
+            # MicroPython allocation failures during long searches
+            gc.collect()
+
             goal = pick_goal()
             if goal is None:
                 break
 
             path = a_star(tuple(pos), goal)
+            # a_star allocates several temporary structures; collect to free them
+            gc.collect()
             if len(path) < 2:
                 break
 
@@ -757,10 +767,14 @@ def search_loop():
 
             # Clue detection: centered + white center sensor
             if at_intersection_and_white():
-                clues.append((pos[0], pos[1]))
-                first_clue_seen = True
-                publish_clue(pos[0], pos[1])
-                update_prob_map()
+                clue = (pos[0], pos[1])
+                if clue not in clues:
+                    clues.append(clue)
+                    first_clue_seen = True
+                    publish_clue(pos[0], pos[1])
+                    update_prob_map()
+                    # releasing temporaries created during map update
+                    gc.collect()
 
     finally:
         motors_off()   # safety: ensure motors are cut even on exceptions
