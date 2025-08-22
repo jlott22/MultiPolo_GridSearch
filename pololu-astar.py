@@ -24,14 +24,17 @@
 
 '''
 TO-DO
-- intergrate with esp32
-- find out what map function deos in handle function
-
+UPDATED 17AUG
+- figure out what current psotion does and why needed. 
+probably should be wieghted like intent. 
+-test bump sensors
 '''
 
 import time
 import _thread
 import heapq
+import sys
+import gc
 from machine import UART, Pin
 from pololu_3pi_2040_robot import robot
 from pololu_3pi_2040_robot.extras import editions
@@ -39,21 +42,21 @@ from pololu_3pi_2040_robot.extras import editions
 # -----------------------------
 # Robot identity & start pose
 # -----------------------------
-ROBOT_ID = "00"                         
-OTHER_ROBOT_ID = "01" 
-GRID_SIZE = 15
+ROBOT_ID = "01"                         
+OTHER_ROBOT_ID = "00" 
+GRID_SIZE = 5
 
 # Starting position & heading (grid coordinates, cardinal heading)
-# pos = (x, y)    heading = (dx, dy) where (0,-1)=N, (1,0)=E, (0,1)=S, (-1,0)=W
+# pos = (x, y)    heading = (dx, dy) where (0,1)=N, (1,0)=E, (0,-1)=S, (-1,0)=W
 if ROBOT_ID == "00":
-    START_POS = (0, 0) #southern bot 00 starts facing north
-    START_HEADING = (0, -1)
-else:
-    START_POS = (GRID_SIZE -1 , GRID_SIZE -1) #northern bot, 01, starts facing south
+    START_POS = (0, 0)  # southern bot 00 starts facing north
     START_HEADING = (0, 1)
+else:
+    START_POS = (GRID_SIZE -1 , GRID_SIZE -1)  # northern bot, 01, starts facing south
+    START_HEADING = (0, -1)
 
 # UART0 for ESP32 communication (TX=GP28, RX=GP29)
-uart = UART(0, baudrate=230400, tx=28, rx=29)
+uart = UART(0, baudrate=115200, tx=28, rx=29)
 
 # -----------------------------
 # Grid / Maps / Shared State
@@ -63,6 +66,12 @@ prob_map = [[1 / (GRID_SIZE * GRID_SIZE) for _ in range(GRID_SIZE)] for _ in ran
 reward_map = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
 clues = []                            # list of (x, y) clue cells
 
+
+def row(y):
+    """Convert Cartesian y (origin at bottom) to list index."""
+    return GRID_SIZE - 1 - y
+
+
 pos = [START_POS[0], START_POS[1]]    # current grid pos
 heading = (START_HEADING[0], START_HEADING[1])
 
@@ -70,6 +79,7 @@ heading = (START_HEADING[0], START_HEADING[1])
 running = True                         # master run flag
 found_object = False                   # set True on bump or peer alert
 first_clue_seen = False                # once True, we disable lawn-mower bias
+move_forward_flag = False
 
 # Intent reservation from the other robot
 other_intent = None                    # (x, y) or None
@@ -83,73 +93,83 @@ other_intent_time_ms = 0
 PREFERS_LEFT = (ROBOT_ID == "00")  # which outer edge is "yours"
 
 # Cost shaping (pre-clue lawn-mower / serpentine)
-CENTER_STEP = 0.7        # cost per step toward the center when switching columns (must be > turn penalty ~=1)
-SWITCH_COL_BASE = 0.2    # small base penalty for switching columns (pre-clue)
-MIDDLE_WHITE_THRESH = 250  # center sensor threshold for "white" (tune by calibration)
+CENTER_STEP = 0.4        # cost per step toward the center when switching columns (must be > turn penalty ~=1)
+SWITCH_COL_BASE = 0.3    # small base penalty for switching columns (pre-clue)
+MIDDLE_WHITE_THRESH = 800  # center sensor threshold for "white" (tune by calibration)
 # ---- Tuning knobs ----
-KP = 0.05                 # proportional gain around LINE_CENTER
+VISITED_STEP_PENALTY = 1.2
+KP = 0.5                # proportional gain around LINE_CENTER
+CALIBRATE_SPEED = 1130       #speed to rotate when calibrating
 BASE_SPEED = 800          # nominal wheel speed
-MIN_SPD = 300             # clamp low (avoid stall)
-MAX_SPD = 1000            # clamp high
+MIN_SPD = 400             # clamp low (avoid stall)
+MAX_SPD = 1200            # clamp high
 LINE_CENTER = 2000        # weighted position target (0..4000)
 BLACK_THRESH = 600        # calibrated "black" threshold (0..1000)
-INTERSECTION_SAMPLES = 3  # consecutive reads to confirm intersection
-STRAIGHT_CREEP = 450      # forward speed while "locked" straight
-START_LOCK_MS = 1000       # hold straight this long after function starts
-
-# persistent state for debounce/lock
-_intersection_hits = 0
-_lock_intersection = False  # when True, ignore P-correction and drive straight
+STRAIGHT_CREEP = 600     # forward speed while "locked" straight
+START_LOCK_MS = 500       # hold straight this long after function starts
 
 # Intent settings
 INTENT_TTL_MS = 1200     # reservation lifetime
 INTENT_PENALTY = 8.0     # strong penalty to avoid stepping into the other's reserved cell
 
+#UART handling globals
+# ---------- ring buffer ----------
+RB_SIZE = 1024
+buf = bytearray(RB_SIZE)
+head = 0
+tail = 0
+DELIM = ord('-')
+
+# ---------- message builder ----------
+MSG_BUF_SIZE = 256
+msg_buf = bytearray(MSG_BUF_SIZE)
+msg_len = 0 
+
 # -----------------------------
 # Motion tuning (line follow / turns)
 # -----------------------------
-LINE_CENTER = 2000       # read_line() center value
-BASE_SPEED = 600
-KP = 0.05
-CELL_TRAVEL_MS = 650
 
-TURN_SPEED = 900
-YAW_90_MS = 0.80
-YAW_180_MS = 1.60
+TURN_SPEED = 1000
+YAW_90_MS = 0.3
+YAW_180_MS = .6
 
 # -----------------------------
 # Hardware interfaces
 # -----------------------------
-bot = robot.robot()
-motors = bot.motors()
-line_sensors = bot.line_sensors()
-bump = bot.bump_sensors()
-rgb_leds = bot.RGBLEDs()
+motors = robot.Motors()
+line_sensors = robot.LineSensors()
+bump = robot.BumpSensors()
+rgb_leds = robot.RGBLEDs()
 rgb_leds.set_brightness(10)
 
 # ===========================================================
 # Utility: Motors & Stop Control
 # ===========================================================
 
-def flash_LEDS(num_times):
-    for _ in range(num_times):
-        # Turn all LEDs green
+RED   = (230, 0, 0)
+GREEN = (0, 230, 0)
+BLUE = (0, 0, 230)
+OFF   = (0, 0, 0)
+
+def flash_LEDS(color, n):
+    for _ in range(n):
         for led in range(6):
-            rgb_leds.set(led, [0, 200, 0])
+            rgb_leds.set(led, color)  # reuses same tuple, no new allocation
+        rgb_leds.show()
+        time.sleep_ms(100)
+        for led in range(6):
+            rgb_leds.set(led, OFF)
         rgb_leds.show()
         time.sleep_ms(100)
 
-        # Turn all LEDs off
-        for led in range(6):
-            rgb_leds.set(led, [0, 0, 0])
-        rgb_leds.show()
-        time.sleep_ms(100)
+        
+flash_LEDS(GREEN,1)
     
 def motors_off():
     """Hard stop both wheels (safety: call in finally/stop paths)."""
     motors.set_speeds(0, 0)
 
-def stop_all(reason=""):
+def stop_all():
     """
     Idempotent global stop:
       - Set flags so all loops/threads exit
@@ -160,7 +180,6 @@ def stop_all(reason=""):
     found_object = True
     running = False
     motors_off()
-    flash_LEDS(5)
 
 def stop_and_alert_object():
     """
@@ -168,55 +187,55 @@ def stop_and_alert_object():
     Publishes alert and performs a global stop.
     """
     publish_object(pos[0], pos[1])
-    stop_all("object")
+    stop_all()
 
+flash_LEDS(GREEN,1)
 # ===========================================================
 # UART Messaging
-# Format: "<ID>/<topic>:<payload>\n"
+# Format: "<topic#>:<payload>\n"
+# position = 1, visited = 2, clue = 3, alert = 4, intent = 5
 # Examples:
-#   00/status:pos:3,4;heading:0,1
-#   00/visited:visit:3,4
-#   00/clue:clue:6,2
-#   00/alert:object:5,7
-#   00/status:intent:4,4
+#   0013,4;0,1- robot 00 status update position (3,4), heading north
+#   00365-
 # ===========================================================
 def uart_send(topic, payload):
     """Send a single line to ESP32; it forwards to MQTT."""
-    line = f"{ROBOT_ID}/{topic}:{payload}-"
+    line = f"{topic}.{payload}-"
     uart.write(line)
 
 def publish_position():
     """Publish current pose (for UI/diagnostics)."""
-    uart_send("status", f"pos:{pos[0]},{pos[1]};heading:{heading[0]},{heading[1]}")
+    uart_send('1', f"{pos[0]},{pos[1]};{heading[0]},{heading[1]}")
 
 def publish_visited(x, y):
     """Publish that we visited cell (x,y)."""
-    uart_send("visited", f"visit:{x},{y}")
+    uart_send('2', f"{x},{y}")
 
 def publish_clue(x, y):
     """Publish a clue at (x,y)."""
-    uart_send("clue", f"clue:{x},{y}")
+    uart_send('3', f"{x},{y}")
 
 def publish_object(x, y):
     """Publish that we found the object at (x,y)."""
-    uart_send("alert", f"object:{x},{y}")
+    uart_send('4', f"{x},{y}")
 
 def publish_intent(x, y):
     """
     Publish our intended next cell (reservation).
     Other robot will penalize stepping into this cell for INTENT_TTL_MS.
     """
-    uart_send("status", f"intent:{x},{y}")
+    uart_send('5', f"{x},{y}")
 
-def handle_uart_line(line):
+def handle_msg(line):
     """
     Parse and apply incoming messages from the other robot.
 
     Accepts:
-      "01/visited:visit:x,y"   → mark visited (optional mirror)
-      "01/clue:clue:x,y"       → add clue, update reward
-      "01/alert:object:x,y"    → global stop
-      "01/status:intent:x,y"   → record reservation
+    011.3,4;0,1-   # topic 1: position+heading
+    002.3,4-       # topic 2: visited
+    003.5,2-       # topic 3: clue
+    004.6,1-       # topic 4: object/alert
+    005.7,2-       # topic 5: intent
 
     Ignores:
       - messages not from OTHER_ROBOT_ID **fix this for mmore bots
@@ -226,64 +245,107 @@ def handle_uart_line(line):
 
     # Minimal parsing: "<sender>/<topic>:<payload>"
     try:
-        left, payload = line.split(":", 1)
-        sender, topic = left.split("/", 1)
+        left, payload = line.split(".", 1)
+        if len(left) < 3:
+            return
+        sender = left[0:2]
+        topic  = left[2]
     except ValueError:
         return
-    if sender != OTHER_ROBOT_ID:
-        return
 
-    if topic == "visited" and payload.startswith("visit:"):
-        x, y = map(int, payload[6:].split(","))
-        if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE and grid[y][x] == 0:
-            grid[y][x] = 2
+    if topic == "2":  #visited
+        try:
+            x, y = map(int, payload.split(","))
+        except ValueError:
+            return
+        if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE and grid[row(y)][x] == 0:
+            grid[row(y)][x] = 2
+            print('visited updated')
 
-    elif topic == "clue" and payload.startswith("clue:"):
-        x, y = map(int, payload[5:].split(","))
+    elif topic == "3":   #clue
+        try:
+            x, y = map(int, payload.split(","))
+        except ValueError:
+            return
         if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
-            clues.append((x, y))
-            first_clue_seen = True
-            update_prob_map()
+            clue = (x, y)
+            if clue not in clues:
+                clues.append(clue)
+                first_clue_seen = True
+                update_prob_map()
+                gc.collect()
+                print('clue updated')
 
-    elif topic == "alert" and payload.startswith("object:"):
+    elif topic == "4": #object
         # Peer found the object → stop immediately
-        stop_all("peer_object")
+        stop_all()
+        print('object updated')
 
-    elif topic == "status" and payload.startswith("intent:"):
-        ix, iy = map(int, payload[7:].split(","))
+    elif topic == "1": #position, heading
+        if ";" not in payload:
+            return
+        other_location, other_heading = payload.split(";")
+        print('recivded position')
+
+    elif topic == "5": #intent
+        try:
+            ix, iy = map(int, payload.split(","))
+        except ValueError:
+            return
         other_intent = (ix, iy)
         other_intent_time_ms = time.ticks_ms()
+        print('intent processed')
 
-def uart_rx_loop():
-    """
-    Background reader thread:
-      - Buffers bytes until newline
-      - Calls handle_uart_line() per complete line
-      - Respects the 'running' flag for clean exit
-    """
-    buf = b""
-    while running:
-        if uart.any():
-            b = uart.read(1)
-            if not b:
-                continue
-            if b == b"\n":
-                line = buf.decode(errors="ignore").strip()
-                if line:
-                    handle_uart_line(line)
-                buf = b""
-            else:
-                buf += b
-        else:
-            time.sleep_ms(10)
+# ---------- ring buffer helpers ----------
+def rb_put_byte(b):
+    """Push one byte into the ring buffer."""
+    global tail, head
+    buf[tail] = b
+    nxt = (tail + 1) % RB_SIZE
+    if nxt == head:                # buffer full, drop oldest
+        head = (head + 1) % RB_SIZE
+    tail = nxt
+
+def rb_pull_into_msg():
+    """Pull bytes into message buffer until '-' is found."""
+    global head, tail, msg_len
+    if head == tail:
+        return None
+    while head != tail:
+        b = buf[head]
+        head = (head + 1) % RB_SIZE
+        if b == DELIM:  # complete frame
+            s = msg_buf[:msg_len].decode('utf-8', 'ignore').strip()
+            msg_len = 0
+            return s
+        if msg_len < MSG_BUF_SIZE:
+            msg_buf[msg_len] = b
+            msg_len += 1
+    return None
+
+# ---------- UART service ----------
+def uart_service():
+    """Read and parse any complete messages from UART."""
+    data = uart.read()     # returns None or bytes object
+    if not data:
+        return
+    print('Data Read: ', data)
+    for b in data:         # iterate over bytes
+        rb_put_byte(b)
+    while True:
+        msg = rb_pull_into_msg()
+        if msg is None:
+            break
+        print('msg: ', msg)
+        handle_msg(msg)
 
 # ===========================================================
 # Sensing & Motion
 # ===========================================================
-
+flash_LEDS(GREEN,1)
 def _clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
-
+'''
 def weighted_position(readings):
     """
     readings: 5 calibrated values (0..1000)
@@ -297,28 +359,18 @@ def weighted_position(readings):
            + 3000*readings[3] + 4000*readings[4]) // total
     return pos
 
-def _outer_either_black(readings):
+def intersection_check(readings):
     """True if left outer OR right outer sees black (handles T-intersections)."""
     return (readings[0] >= BLACK_THRESH) or (readings[4] >= BLACK_THRESH)
 
-def _update_intersection_debounce(readings):
-    """
-    Count consecutive frames where an outer sensor is black.
-    Return True once INTERSECTION_SAMPLES are seen in a row.
-    """
-    global _intersection_hits
-    if _outer_either_black(readings):
-        _intersection_hits += 1
-    else:
-        _intersection_hits = 0
-    return _intersection_hits >= INTERSECTION_SAMPLES
-
 def bumped():
-    """Return True only if a bumper is pressed continuously for ~40 ms."""
-    if not (bump.read_left() or bump.read_right()):
+    """Return True only if a bumper is pressed """
+    bump.read()
+    if bump.left_is_pressed() or bump.right_is_pressed():
+        return True
+    else:
         return False
-    time.sleep_ms(40)
-    return bump.read_left() or bump.read_right()
+'''
 
 def move_forward_one_cell():
     """
@@ -333,64 +385,58 @@ def move_forward_one_cell():
       True  -> reached an intersection (no bump)
       False -> stopped due to bump or external stop condition
     """
-    global _intersection_hits, _lock_intersection
+    global _intersection_hits, move_forward_flag
     _intersection_hits = 0
-    _lock_intersection = False
-
-    flash_LEDS(1)
-
-    # Initial lock to roll straight for half a second
-    lock_release_time = time.ticks_add(time.ticks_ms(), START_LOCK_MS)
-
+    first_loop = False
+    lock_release_time = time.ticks_ms() #flag to reset start lock time
+    #outter infinite loop to keep thread check for activation
     while running:
-        # 1) Safety/object check
-        if bumped():
-            stop_and_alert_object()
-            motors_off()
-            return False
+        
+        while move_forward_flag:
+            # 1) Safety/object check
+            if first_loop:
+                # Initial lock to roll straight for half a second
+                lock_release_time = time.ticks_add(time.ticks_ms(), START_LOCK_MS)
+                first_loop = False
 
-        # 2) Read sensors
-        readings = line_sensors.read_calibrated()
-
-        # 3) During initial lock window, always drive straight
-        if time.ticks_diff(time.ticks_ms(), lock_release_time) < 0:
-            motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
-            continue
-
-        # 4) Candidate intersection? lock heading immediately
-        if _outer_either_black(readings) and not _lock_intersection:
-            _lock_intersection = True
-            _intersection_hits = 1  # count this frame
-
-        # 5) While locked: confirm or keep rolling straight
-        if _lock_intersection:
-            if _update_intersection_debounce(readings):
+            # 3) During initial lock window, always drive straight
+            if time.ticks_diff(time.ticks_ms(), lock_release_time) < 0:
+                motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
+                continue
+            
+            # 2) Read sensors
+            readings = line_sensors.read_calibrated()
+            
+            bump.read()
+            if bump.left_is_pressed() or bump.right_is_pressed():
+                stop_and_alert_object()
                 motors_off()
-                return True
-            motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
-            continue
+                move_forward_flag = False
+                break
+            
+            # 4) Candidate intersection? lock heading immediately
+            if readings[0] >= BLACK_THRESH or readings[4] >= BLACK_THRESH:
+                motors_off()
+                flash_LEDS(GREEN,1)
+                move_forward_flag = False
+                first_loop = True
+                break
 
-        # 6) Normal P-control when not locked
-        total = readings[0] + readings[1] + readings[2] + readings[3] + readings[4]
-        if total == 0:
-            # line lost; creep straight (or call your recovery here)
-            motors.set_speeds(400, 400)
-            continue
+            # 6) Normal P-control when not locked
+            total = readings[0] + readings[1] + readings[2] + readings[3] + readings[4]
+            if total == 0:
+                motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
+                continue
+            # weights: 0, 1000, 2000, 3000, 4000
+            pos = (0*readings[0] + 1000*readings[1] + 2000*readings[2] + 3000*readings[3] + 4000*readings[4]) // total
+            error = pos - LINE_CENTER
+            correction = int(KP * error)
 
-        pos = weighted_position(readings)  # 0..4000 or None
-        if pos is None:
-            motors.set_speeds(400, 400)
-            continue
+            left  = _clamp(BASE_SPEED + correction, MIN_SPD, MAX_SPD)
+            right = _clamp(BASE_SPEED - correction, MIN_SPD, MAX_SPD)
+            motors.set_speeds(left, right)
 
-        error = pos - LINE_CENTER
-        correction = int(KP * error)
-
-        left  = _clamp(BASE_SPEED + correction, MIN_SPD, MAX_SPD)
-        right = _clamp(BASE_SPEED - correction, MIN_SPD, MAX_SPD)
-        motors.set_speeds(left, right)
-
-    motors_off()
-    return False
+        time.sleep_ms(300)
 
 def calibrate():
     """Calibrate line sensors then advance to the first intersection.
@@ -401,7 +447,7 @@ def calibrate():
     first intersection and updates the global ``pos`` to ``START_POS`` so the
     caller sees that intersection as the starting point of the search.
     """
-    global pos
+    global pos, move_forward_flag
 
     # 1) Spin in place to expose sensors to both edges of the line.
     #    A single full rotation is enough, so spin in one direction while
@@ -412,20 +458,26 @@ def calibrate():
             motors_off()
             return
 
-        motors.set_speeds(920, -920)
+        motors.set_speeds(CALIBRATE_SPEED, -CALIBRATE_SPEED)
         line_sensors.calibrate()
-        time.sleep_ms(10)
-
+        time.sleep_ms(5)
+        
     motors_off()
+    bump.calibrate()
+    time.sleep_ms(5)
+
 
     # 2) Move forward until an intersection is detected.  After the forward
     #    move the robot is sitting on our true starting cell (defined by
     #    ``START_POS`` at the top of the file) so overwrite any temporary
     #    position with that constant and mark the cell visited.
-    if move_forward_one_cell():
-        pos[0], pos[1] = START_POS
-        if 0 <= pos[0] < GRID_SIZE and 0 <= pos[1] < GRID_SIZE:
-            grid[pos[1]][pos[0]] = 2
+    move_forward_flag = True
+    while move_forward_flag:
+        uart_service()
+        time.sleep_ms(1)
+    pos[0], pos[1] = START_POS
+    if 0 <= pos[0] < GRID_SIZE and 0 <= pos[1] < GRID_SIZE:
+        grid[row(pos[1])][pos[0]] = 2
 
     motors_off()
     
@@ -434,15 +486,15 @@ def at_intersection_and_white():
     """
     Detect a 'clue':
       - Center line sensor reads white ( < MIDDLE_WHITE_THRESH )
-      - Position is near the center of the line (~ at an intersection)
     Returns bool.
     """
     r = line_sensors.read_calibrated()      # [0]..[4], center is [2]
-    pos = weighted_position(r)
-    center_white = r[2] < MIDDLE_WHITE_THRESH
-    centered = abs(pos - LINE_CENTER) < 150
-    return center_white and centered
+    if r[2] < MIDDLE_WHITE_THRESH:
+        return True
+    else:
+        return False
 
+flash_LEDS(GREEN,1)
 # ===========================================================
 # Heading / Turning (cardinal NSEW)
 # ===========================================================
@@ -452,6 +504,11 @@ def rotate_degrees(deg):
     deg ∈ {-180, -90, 0, 90, 180}
     Obeys 'running' flag and always cuts motors at the end.
     """
+    #inch forward to make clean turn
+    motors.set_speeds(800, 800)
+    time.sleep(.2)
+    motors_off()
+    
     if deg == 0 or not running:
         motors_off()
         return
@@ -481,7 +538,7 @@ def turn_towards(cur, nxt):
     dx, dy = nxt[0] - cur[0], nxt[1] - cur[1]
     target = (dx, dy)
 
-    dirs = [(0,-1),(1,0),(0,1),(-1,0)]   # N,E,S,W (clockwise)
+    dirs = [(0,1),(1,0),(0,-1),(-1,0)]   # N,E,S,W (clockwise)
     i = dirs.index(heading)
     j = dirs.index(target)
     delta = (j - i) % 4
@@ -494,7 +551,7 @@ def turn_towards(cur, nxt):
 
     rotate_degrees(deg)
     heading = target
-
+flash_LEDS(GREEN,1)
 # ===========================================================
 # Reward Model (clues) & Pre-Clue Serpentine Bias
 # ===========================================================
@@ -507,16 +564,16 @@ def update_prob_map():
     """
     for y in range(GRID_SIZE):
         for x in range(GRID_SIZE):
-            if grid[y][x] == 2:  # visited
-                prob_map[y][x] = 0.0
-                reward_map[y][x] = 0.0
+            if grid[row(y)][x] == 2:  # visited
+                prob_map[row(y)][x] = 0.0
+                reward_map[row(y)][x] = 0.0
                 continue
             base = 1 / (GRID_SIZE * GRID_SIZE)
             clue_sum = 0.0
             for (cx, cy) in clues:
                 clue_sum += 5 / (1 + abs(x - cx) + abs(y - cy))
-            prob_map[y][x] = base + clue_sum
-            reward_map[y][x] = prob_map[y][x] * 5
+            prob_map[row(y)][x] = base + clue_sum
+            reward_map[row(y)][x] = prob_map[row(y)][x] * 5
 
 def edge_distance_from_side(x):
     """
@@ -571,9 +628,9 @@ def pick_goal():
     best_val = -1e9
     for y in range(GRID_SIZE):
         for x in range(GRID_SIZE):
-            if grid[y][x] != 0:
+            if grid[row(y)][x] != 0:
                 continue
-            val = reward_map[y][x]
+            val = reward_map[row(y)][x]
             if not first_clue_seen:
                 # Static nudge to keep targets in outer strips pre-clue
                 # (dynamic step cost in A* does the heavy lifting)
@@ -584,11 +641,11 @@ def pick_goal():
 
     if best is None:
         # Fallback: nearest unknown
-        unknowns = [(x, y) for y in range(GRID_SIZE) for x in range(GRID_SIZE) if grid[y][x] == 0]
+        unknowns = [(x, y) for y in range(GRID_SIZE) for x in range(GRID_SIZE) if grid[row(y)][x] == 0]
         if unknowns:
             best = min(unknowns, key=lambda c: abs(c[0] - pos[0]) + abs(c[1] - pos[1]))
     return best
-
+flash_LEDS(GREEN,1)
 # ===========================================================
 # A* Planner (4-neighbor grid, cardinal)
 # ===========================================================
@@ -598,6 +655,7 @@ def a_star(start, goal):
       +1 per step
       +1 turn penalty if direction changes
       + centerward_step_cost (pre-clue serpentine)
+      + VISITED_STEP_PENALTY if stepping onto a visited cell (grid==2)
       + INTENT_PENALTY if stepping into the other's reserved next cell
       - reward_map (seek high-reward cells)
     Returns a path as a list: [start, ..., goal], or [] if failure.
@@ -616,7 +674,7 @@ def a_star(start, goal):
             nx, ny = cx + dx, cy + dy
             if not (0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE):
                 continue
-            if grid[ny][nx] == 1:  # reserved for obstacles (not used yet)
+            if grid[row(ny)][nx] == 1:  # 1 = obstacle/reserved
                 continue
 
             new_cost = cost_so_far[current] + 1
@@ -625,8 +683,12 @@ def a_star(start, goal):
             if (dx, dy) != cur_dir:
                 new_cost += 1
 
+            # 🔹 Penalty for retracing visited cells
+            if grid[row(ny)][nx] == 2:   # 2 = visited
+                new_cost += VISITED_STEP_PENALTY
+
             # Reward shaping (prefer high reward)
-            new_cost -= reward_map[ny][nx]
+            new_cost -= reward_map[row(ny)][nx]
 
             # Pre-clue: penalize inward hops (serpentine)
             new_cost += centerward_step_cost(cx, nx)
@@ -644,6 +706,7 @@ def a_star(start, goal):
 
     if goal not in came_from:
         return []
+
     # Reconstruct path
     path, cur = [], goal
     while cur != start:
@@ -652,6 +715,8 @@ def a_star(start, goal):
     path.reverse()
     return [start] + path
 
+
+flash_LEDS(GREEN,1)
 # ===========================================================
 # Main Search Loop
 # ===========================================================
@@ -666,7 +731,7 @@ def search_loop():
       6) Repeat until object found or no goals remain
     Always cuts motors in a finally block.
     """
-    global first_clue_seen
+    global first_clue_seen, move_forward_flag
 
     try:
         calibrate()
@@ -675,11 +740,17 @@ def search_loop():
         publish_visited(pos[0], pos[1])
         
         while running and not found_object:
+            # free any unused memory from previous iteration to avoid
+            # MicroPython allocation failures during long searches
+            gc.collect()
+
             goal = pick_goal()
             if goal is None:
                 break
 
             path = a_star(tuple(pos), goal)
+            # a_star allocates several temporary structures; collect to free them
+            gc.collect()
             if len(path) < 2:
                 break
 
@@ -696,38 +767,46 @@ def search_loop():
             turn_towards(tuple(pos), nxt)
             if not running or found_object:
                 break
-
-            if not move_forward_one_cell():
-                break  # Bump or stop condition handled inside
+            
+            move_forward_flag = True
+            while move_forward_flag:
+                uart_service()
+                time.sleep_ms(1)
 
             # Arrived → update state & publish
             pos[0], pos[1] = nxt[0], nxt[1]
-            grid[pos[1]][pos[0]] = 2
+            grid[row(pos[1])][pos[0]] = 2
             publish_position()
             publish_visited(pos[0], pos[1])
 
             # Clue detection: centered + white center sensor
             if at_intersection_and_white():
-                clues.append((pos[0], pos[1]))
-                first_clue_seen = True
-                publish_clue(pos[0], pos[1])
-                update_prob_map()
+                clue = (pos[0], pos[1])
+                if clue not in clues:
+                    clues.append(clue)
+                    first_clue_seen = True
+                    publish_clue(pos[0], pos[1])
+                    update_prob_map()
+                    # releasing temporaries created during map update
+                    gc.collect()
 
     finally:
         motors_off()   # safety: ensure motors are cut even on exceptions
-
+flash_LEDS(GREEN,1)
 # ===========================================================
 # Entry Point
 # ===========================================================
-if __name__ == "__main__":
-    flash_LEDS(5)
-    # Start the single UART RX thread (clean exit when 'running' goes False)
-    _thread.start_new_thread(uart_rx_loop, ())
 
-    # Kick off the mission
-    try:
-        search_loop()
-    finally:
-        # Ensure absolutely everything is stopped
-        stop_all("finally")
-        time.sleep_ms(200)  # give RX thread time to fall out cleanly
+flash_LEDS(RED,1)
+# Start the single UART RX thread (clean exit when 'running' goes False)
+_thread.start_new_thread(move_forward_one_cell, ())
+
+# Kick off the mission
+try:
+    search_loop()
+finally:
+    # Ensure absolutely everything is stopped
+    running = False
+    stop_all()
+    flash_LEDS(RED,5)
+    time.sleep_ms(200)  # give RX thread time to fall out cleanly
