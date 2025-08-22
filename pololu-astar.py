@@ -253,13 +253,19 @@ def handle_msg(line):
         return
 
     if topic == "2":  #visited
-        x, y = map(int, payload.split(","))
+        try:
+            x, y = map(int, payload.split(","))
+        except ValueError:
+            return
         if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE and grid[row(y)][x] == 0:
             grid[row(y)][x] = 2
             print('visited updated')
 
     elif topic == "3":   #clue
-        x, y = map(int, payload.split(","))
+        try:
+            x, y = map(int, payload.split(","))
+        except ValueError:
+            return
         if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
             clues.append((x, y))
             first_clue_seen = True
@@ -272,11 +278,16 @@ def handle_msg(line):
         print('object updated')
 
     elif topic == "1": #position, heading
+        if ";" not in payload:
+            return
         other_location, other_heading = payload.split(";")
         print('recivded position')
-        
+
     elif topic == "5": #intent
-        ix, iy = map(int, payload.split(","))
+        try:
+            ix, iy = map(int, payload.split(","))
+        except ValueError:
+            return
         other_intent = (ix, iy)
         other_intent_time_ms = time.ticks_ms()
         print('intent processed')
@@ -409,6 +420,9 @@ def move_forward_one_cell():
 
             # 6) Normal P-control when not locked
             total = readings[0] + readings[1] + readings[2] + readings[3] + readings[4]
+            if total == 0:
+                motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
+                continue
             # weights: 0, 1000, 2000, 3000, 4000
             pos = (0*readings[0] + 1000*readings[1] + 2000*readings[2] + 3000*readings[3] + 4000*readings[4]) // total
             error = pos - LINE_CENTER
