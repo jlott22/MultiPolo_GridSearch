@@ -18,8 +18,8 @@
 #
 # Tuning notes:
 #   * Set UART pins/baud as per Pololu board.
-#   * Calibrate line sensors; adjust MIDDLE_WHITE_THRESH as needed.
-#   * Adjust turn timings (YAW_90_MS/YAW_180_MS) to your platform.
+#   * Calibrate line sensors; adjust cfg.MIDDLE_WHITE_THRESH as needed.
+#   * Adjust turn timings (cfg.YAW_90_MS/cfg.YAW_180_MS) to your platform.
 # ===========================================================
 
 '''
@@ -95,18 +95,28 @@ PREFERS_LEFT = (ROBOT_ID == "00")  # which outer edge is "yours"
 # Cost shaping (pre-clue lawn-mower / serpentine)
 CENTER_STEP = 0.4        # cost per step toward the center when switching columns (must be > turn penalty ~=1)
 SWITCH_COL_BASE = 0.3    # small base penalty for switching columns (pre-clue)
-MIDDLE_WHITE_THRESH = 800  # center sensor threshold for "white" (tune by calibration)
-# ---- Tuning knobs ----
-VISITED_STEP_PENALTY = 1.2
-KP = 0.5                # proportional gain around LINE_CENTER
-CALIBRATE_SPEED = 1130       #speed to rotate when calibrating
-BASE_SPEED = 800          # nominal wheel speed
-MIN_SPD = 400             # clamp low (avoid stall)
-MAX_SPD = 1200            # clamp high
-LINE_CENTER = 2000        # weighted position target (0..4000)
-BLACK_THRESH = 600        # calibrated "black" threshold (0..1000)
-STRAIGHT_CREEP = 600     # forward speed while "locked" straight
-START_LOCK_MS = 500       # hold straight this long after function starts
+
+# -----------------------------
+# Motion configuration
+# -----------------------------
+class MotionConfig:
+    def __init__(self):
+        self.MIDDLE_WHITE_THRESH = 800  # center sensor threshold for "white" (tune by calibration)
+        self.VISITED_STEP_PENALTY = 1.2
+        self.KP = 0.5                # proportional gain around LINE_CENTER
+        self.CALIBRATE_SPEED = 1130  # speed to rotate when calibrating
+        self.BASE_SPEED = 800        # nominal wheel speed
+        self.MIN_SPD = 400           # clamp low (avoid stall)
+        self.MAX_SPD = 1200          # clamp high
+        self.LINE_CENTER = 2000      # weighted position target (0..4000)
+        self.BLACK_THRESH = 600      # calibrated "black" threshold (0..1000)
+        self.STRAIGHT_CREEP = 600    # forward speed while "locked" straight
+        self.START_LOCK_MS = 500     # hold straight this long after function starts
+        self.TURN_SPEED = 1000
+        self.YAW_90_MS = 0.3
+        self.YAW_180_MS = 0.6
+
+cfg = MotionConfig()
 
 # Intent settings
 INTENT_TTL_MS = 1200     # reservation lifetime
@@ -124,14 +134,6 @@ DELIM = ord('-')
 MSG_BUF_SIZE = 256
 msg_buf = bytearray(MSG_BUF_SIZE)
 msg_len = 0 
-
-# -----------------------------
-# Motion tuning (line follow / turns)
-# -----------------------------
-
-TURN_SPEED = 1000
-YAW_90_MS = 0.3
-YAW_180_MS = .6
 
 # -----------------------------
 # Hardware interfaces
@@ -361,7 +363,7 @@ def weighted_position(readings):
 
 def intersection_check(readings):
     """True if left outer OR right outer sees black (handles T-intersections)."""
-    return (readings[0] >= BLACK_THRESH) or (readings[4] >= BLACK_THRESH)
+    return (readings[0] >= cfg.BLACK_THRESH) or (readings[4] >= cfg.BLACK_THRESH)
 
 def bumped():
     """Return True only if a bumper is pressed """
@@ -396,12 +398,12 @@ def move_forward_one_cell():
             # 1) Safety/object check
             if first_loop:
                 # Initial lock to roll straight for half a second
-                lock_release_time = time.ticks_add(time.ticks_ms(), START_LOCK_MS)
+                lock_release_time = time.ticks_add(time.ticks_ms(), cfg.START_LOCK_MS)
                 first_loop = False
 
             # 3) During initial lock window, always drive straight
             if time.ticks_diff(time.ticks_ms(), lock_release_time) < 0:
-                motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
+                motors.set_speeds(cfg.STRAIGHT_CREEP, cfg.STRAIGHT_CREEP)
                 continue
             
             # 2) Read sensors
@@ -415,7 +417,7 @@ def move_forward_one_cell():
                 break
             
             # 4) Candidate intersection? lock heading immediately
-            if readings[0] >= BLACK_THRESH or readings[4] >= BLACK_THRESH:
+            if readings[0] >= cfg.BLACK_THRESH or readings[4] >= cfg.BLACK_THRESH:
                 motors_off()
                 flash_LEDS(GREEN,1)
                 move_forward_flag = False
@@ -425,15 +427,15 @@ def move_forward_one_cell():
             # 6) Normal P-control when not locked
             total = readings[0] + readings[1] + readings[2] + readings[3] + readings[4]
             if total == 0:
-                motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
+                motors.set_speeds(cfg.STRAIGHT_CREEP, cfg.STRAIGHT_CREEP)
                 continue
             # weights: 0, 1000, 2000, 3000, 4000
             pos = (0*readings[0] + 1000*readings[1] + 2000*readings[2] + 3000*readings[3] + 4000*readings[4]) // total
-            error = pos - LINE_CENTER
-            correction = int(KP * error)
+            error = pos - cfg.LINE_CENTER
+            correction = int(cfg.KP * error)
 
-            left  = _clamp(BASE_SPEED + correction, MIN_SPD, MAX_SPD)
-            right = _clamp(BASE_SPEED - correction, MIN_SPD, MAX_SPD)
+            left  = _clamp(cfg.BASE_SPEED + correction, cfg.MIN_SPD, cfg.MAX_SPD)
+            right = _clamp(cfg.BASE_SPEED - correction, cfg.MIN_SPD, cfg.MAX_SPD)
             motors.set_speeds(left, right)
 
         time.sleep_ms(300)
@@ -458,7 +460,7 @@ def calibrate():
             motors_off()
             return
 
-        motors.set_speeds(CALIBRATE_SPEED, -CALIBRATE_SPEED)
+        motors.set_speeds(cfg.CALIBRATE_SPEED, -cfg.CALIBRATE_SPEED)
         line_sensors.calibrate()
         time.sleep_ms(5)
         
@@ -485,11 +487,11 @@ def calibrate():
 def at_intersection_and_white():
     """
     Detect a 'clue':
-      - Center line sensor reads white ( < MIDDLE_WHITE_THRESH )
+      - Center line sensor reads white ( < cfg.MIDDLE_WHITE_THRESH )
     Returns bool.
     """
     r = line_sensors.read_calibrated()      # [0]..[4], center is [2]
-    if r[2] < MIDDLE_WHITE_THRESH:
+    if r[2] < cfg.MIDDLE_WHITE_THRESH:
         return True
     else:
         return False
@@ -505,7 +507,7 @@ def rotate_degrees(deg):
     Obeys 'running' flag and always cuts motors at the end.
     """
     #inch forward to make clean turn
-    motors.set_speeds(800, 800)
+    motors.set_speeds(cfg.BASE_SPEED, cfg.BASE_SPEED)
     time.sleep(.2)
     motors_off()
     
@@ -514,16 +516,16 @@ def rotate_degrees(deg):
         return
 
     if deg == 180 or deg == -180:
-        motors.set_speeds(TURN_SPEED, -TURN_SPEED)
-        if running: time.sleep(YAW_180_MS)
+        motors.set_speeds(cfg.TURN_SPEED, -cfg.TURN_SPEED)
+        if running: time.sleep(cfg.YAW_180_MS)
 
     elif deg == 90:
-        motors.set_speeds(TURN_SPEED, -TURN_SPEED)
-        if running: time.sleep(YAW_90_MS)
+        motors.set_speeds(cfg.TURN_SPEED, -cfg.TURN_SPEED)
+        if running: time.sleep(cfg.YAW_90_MS)
 
     elif deg == -90:
-        motors.set_speeds(-TURN_SPEED, TURN_SPEED)
-        if running: time.sleep(YAW_90_MS)
+        motors.set_speeds(-cfg.TURN_SPEED, cfg.TURN_SPEED)
+        if running: time.sleep(cfg.YAW_90_MS)
 
     motors_off()
 
@@ -655,7 +657,7 @@ def a_star(start, goal):
       +1 per step
       +1 turn penalty if direction changes
       + centerward_step_cost (pre-clue serpentine)
-      + VISITED_STEP_PENALTY if stepping onto a visited cell (grid==2)
+      + cfg.VISITED_STEP_PENALTY if stepping onto a visited cell (grid==2)
       + INTENT_PENALTY if stepping into the other's reserved next cell
       - reward_map (seek high-reward cells)
     Returns a path as a list: [start, ..., goal], or [] if failure.
@@ -685,7 +687,7 @@ def a_star(start, goal):
 
             # 🔹 Penalty for retracing visited cells
             if grid[row(ny)][nx] == 2:   # 2 = visited
-                new_cost += VISITED_STEP_PENALTY
+                new_cost += cfg.VISITED_STEP_PENALTY
 
             # Reward shaping (prefer high reward)
             new_cost -= reward_map[row(ny)][nx]
