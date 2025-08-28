@@ -35,6 +35,7 @@ import _thread
 import heapq
 import sys
 import gc
+from array import array
 from machine import UART, Pin
 from pololu_3pi_2040_robot import robot
 from pololu_3pi_2040_robot.extras import editions
@@ -61,15 +62,15 @@ uart = UART(0, baudrate=115200, tx=28, rx=29)
 # -----------------------------
 # Grid / Maps / Shared State
 # -----------------------------
-grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]  # 0=unknown, 1=obstacle (reserved), 2=visited
-prob_map = [[1 / (GRID_SIZE * GRID_SIZE) for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
-reward_map = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+grid = bytearray(GRID_SIZE * GRID_SIZE)  # 0=unknown, 1=obstacle (reserved), 2=visited
+prob_map = array('f', [1 / (GRID_SIZE * GRID_SIZE)] * (GRID_SIZE * GRID_SIZE))
+reward_map = array('f', [0.0] * (GRID_SIZE * GRID_SIZE))
 clues = []                            # list of (x, y) clue cells
 
 
-def row(y):
-    """Convert Cartesian y (origin at bottom) to list index."""
-    return GRID_SIZE - 1 - y
+def idx(x, y):
+    """Convert Cartesian (x, y) to linear index in map arrays."""
+    return (GRID_SIZE - 1 - y) * GRID_SIZE + x
 
 
 pos = [START_POS[0], START_POS[1]]    # current grid pos
@@ -260,9 +261,11 @@ def handle_msg(line):
             x, y = map(int, payload.split(","))
         except ValueError:
             return
-        if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE and grid[row(y)][x] == 0:
-            grid[row(y)][x] = 2
-            print('visited updated')
+        if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
+            i = idx(x, y)
+            if grid[i] == 0:
+                grid[i] = 2
+                print('visited updated')
 
     elif topic == "3":   #clue
         try:
@@ -479,7 +482,7 @@ def calibrate():
         time.sleep_ms(1)
     pos[0], pos[1] = START_POS
     if 0 <= pos[0] < GRID_SIZE and 0 <= pos[1] < GRID_SIZE:
-        grid[row(pos[1])][pos[0]] = 2
+        grid[idx(pos[0], pos[1])] = 2
 
     motors_off()
     
@@ -566,16 +569,17 @@ def update_prob_map():
     """
     for y in range(GRID_SIZE):
         for x in range(GRID_SIZE):
-            if grid[row(y)][x] == 2:  # visited
-                prob_map[row(y)][x] = 0.0
-                reward_map[row(y)][x] = 0.0
+            i = idx(x, y)
+            if grid[i] == 2:  # visited
+                prob_map[i] = 0.0
+                reward_map[i] = 0.0
                 continue
             base = 1 / (GRID_SIZE * GRID_SIZE)
             clue_sum = 0.0
             for (cx, cy) in clues:
                 clue_sum += 5 / (1 + abs(x - cx) + abs(y - cy))
-            prob_map[row(y)][x] = base + clue_sum
-            reward_map[row(y)][x] = prob_map[row(y)][x] * 5
+            prob_map[i] = base + clue_sum
+            reward_map[i] = prob_map[i] * 5
 
 def edge_distance_from_side(x):
     """
@@ -630,9 +634,10 @@ def pick_goal():
     best_val = -1e9
     for y in range(GRID_SIZE):
         for x in range(GRID_SIZE):
-            if grid[row(y)][x] != 0:
+            i = idx(x, y)
+            if grid[i] != 0:
                 continue
-            val = reward_map[row(y)][x]
+            val = reward_map[i]
             if not first_clue_seen:
                 # Static nudge to keep targets in outer strips pre-clue
                 # (dynamic step cost in A* does the heavy lifting)
@@ -643,7 +648,7 @@ def pick_goal():
 
     if best is None:
         # Fallback: nearest unknown
-        unknowns = [(x, y) for y in range(GRID_SIZE) for x in range(GRID_SIZE) if grid[row(y)][x] == 0]
+        unknowns = [(x, y) for y in range(GRID_SIZE) for x in range(GRID_SIZE) if grid[idx(x, y)] == 0]
         if unknowns:
             best = min(unknowns, key=lambda c: abs(c[0] - pos[0]) + abs(c[1] - pos[1]))
     return best
@@ -676,7 +681,8 @@ def a_star(start, goal):
             nx, ny = cx + dx, cy + dy
             if not (0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE):
                 continue
-            if grid[row(ny)][nx] == 1:  # 1 = obstacle/reserved
+            i = idx(nx, ny)
+            if grid[i] == 1:  # 1 = obstacle/reserved
                 continue
 
             new_cost = cost_so_far[current] + 1
@@ -685,12 +691,12 @@ def a_star(start, goal):
             if (dx, dy) != cur_dir:
                 new_cost += 1
 
-            # 🔹 Penalty for retracing visited cells
-            if grid[row(ny)][nx] == 2:   # 2 = visited
+            # 🔹 Penalty for retracing visited cell
+            if grid[i] == 2:   # 2 = visited
                 new_cost += cfg.VISITED_STEP_PENALTY
 
             # Reward shaping (prefer high reward)
-            new_cost -= reward_map[row(ny)][nx]
+            new_cost -= reward_map[i]
 
             # Pre-clue: penalize inward hops (serpentine)
             new_cost += centerward_step_cost(cx, nx)
@@ -777,7 +783,7 @@ def search_loop():
 
             # Arrived → update state & publish
             pos[0], pos[1] = nxt[0], nxt[1]
-            grid[row(pos[1])][pos[0]] = 2
+            grid[idx(pos[0], pos[1])] = 2
             publish_position()
             publish_visited(pos[0], pos[1])
 
