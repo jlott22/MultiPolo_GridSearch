@@ -18,8 +18,8 @@
 #
 # Tuning notes:
 #   * Set UART pins/baud as per Pololu board.
-#   * Calibrate line sensors; adjust MIDDLE_WHITE_THRESH as needed.
-#   * Adjust turn timings (YAW_90_MS/YAW_180_MS) to your platform.
+#   * Calibrate line sensors; adjust cfg.MIDDLE_WHITE_THRESH as needed.
+#   * Adjust turn timings (cfg.YAW_90_MS/cfg.YAW_180_MS) to your platform.
 # ===========================================================
 
 '''
@@ -35,6 +35,7 @@ import _thread
 import heapq
 import sys
 import gc
+from array import array
 from machine import UART, Pin
 from pololu_3pi_2040_robot import robot
 from pololu_3pi_2040_robot.extras import editions
@@ -61,16 +62,15 @@ uart = UART(0, baudrate=115200, tx=28, rx=29)
 # -----------------------------
 # Grid / Maps / Shared State
 # -----------------------------
-grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]  # 0=unknown, 1=obstacle (reserved), 2=visited
-prob_map = [[1 / (GRID_SIZE * GRID_SIZE) for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
-# scales probability values into reward weight
+grid = bytearray(GRID_SIZE * GRID_SIZE)  # 0=unknown, 1=obstacle (reserved), 2=visited
+prob_map = array('f', [1 / (GRID_SIZE * GRID_SIZE)] * (GRID_SIZE * GRID_SIZE))
 REWARD_FACTOR = 5
 clues = []                            # list of (x, y) clue cells
 
 
-def row(y):
-    """Convert Cartesian y (origin at bottom) to list index."""
-    return GRID_SIZE - 1 - y
+def idx(x, y):
+    """Convert Cartesian (x, y) to linear index in map arrays."""
+    return (GRID_SIZE - 1 - y) * GRID_SIZE + x
 
 
 pos = [START_POS[0], START_POS[1]]    # current grid pos
@@ -96,18 +96,28 @@ PREFERS_LEFT = (ROBOT_ID == "00")  # which outer edge is "yours"
 # Cost shaping (pre-clue lawn-mower / serpentine)
 CENTER_STEP = 0.4        # cost per step toward the center when switching columns (must be > turn penalty ~=1)
 SWITCH_COL_BASE = 0.3    # small base penalty for switching columns (pre-clue)
-MIDDLE_WHITE_THRESH = 800  # center sensor threshold for "white" (tune by calibration)
-# ---- Tuning knobs ----
-VISITED_STEP_PENALTY = 1.2
-KP = 0.5                # proportional gain around LINE_CENTER
-CALIBRATE_SPEED = 1130       #speed to rotate when calibrating
-BASE_SPEED = 800          # nominal wheel speed
-MIN_SPD = 400             # clamp low (avoid stall)
-MAX_SPD = 1200            # clamp high
-LINE_CENTER = 2000        # weighted position target (0..4000)
-BLACK_THRESH = 600        # calibrated "black" threshold (0..1000)
-STRAIGHT_CREEP = 600     # forward speed while "locked" straight
-START_LOCK_MS = 500       # hold straight this long after function starts
+
+# -----------------------------
+# Motion configuration
+# -----------------------------
+class MotionConfig:
+    def __init__(self):
+        self.MIDDLE_WHITE_THRESH = 800  # center sensor threshold for "white" (tune by calibration)
+        self.VISITED_STEP_PENALTY = 1.2
+        self.KP = 0.5                # proportional gain around LINE_CENTER
+        self.CALIBRATE_SPEED = 1130  # speed to rotate when calibrating
+        self.BASE_SPEED = 800        # nominal wheel speed
+        self.MIN_SPD = 400           # clamp low (avoid stall)
+        self.MAX_SPD = 1200          # clamp high
+        self.LINE_CENTER = 2000      # weighted position target (0..4000)
+        self.BLACK_THRESH = 600      # calibrated "black" threshold (0..1000)
+        self.STRAIGHT_CREEP = 600    # forward speed while "locked" straight
+        self.START_LOCK_MS = 500     # hold straight this long after function starts
+        self.TURN_SPEED = 1000
+        self.YAW_90_MS = 0.3
+        self.YAW_180_MS = 0.6
+
+cfg = MotionConfig()
 
 # Intent settings
 INTENT_TTL_MS = 1200     # reservation lifetime
@@ -125,14 +135,6 @@ DELIM = ord('-')
 MSG_BUF_SIZE = 256
 msg_buf = bytearray(MSG_BUF_SIZE)
 msg_len = 0 
-
-# -----------------------------
-# Motion tuning (line follow / turns)
-# -----------------------------
-
-TURN_SPEED = 1000
-YAW_90_MS = 0.3
-YAW_180_MS = .6
 
 # -----------------------------
 # Hardware interfaces
@@ -259,9 +261,11 @@ def handle_msg(line):
             x, y = map(int, payload.split(","))
         except ValueError:
             return
-        if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE and grid[row(y)][x] == 0:
-            grid[row(y)][x] = 2
-            print('visited updated')
+        if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
+            i = idx(x, y)
+            if grid[i] == 0:
+                grid[i] = 2
+                print('visited updated')
 
     elif topic == "3":   #clue
         try:
@@ -362,7 +366,7 @@ def weighted_position(readings):
 
 def intersection_check(readings):
     """True if left outer OR right outer sees black (handles T-intersections)."""
-    return (readings[0] >= BLACK_THRESH) or (readings[4] >= BLACK_THRESH)
+    return (readings[0] >= cfg.BLACK_THRESH) or (readings[4] >= cfg.BLACK_THRESH)
 
 def bumped():
     """Return True only if a bumper is pressed """
@@ -397,12 +401,12 @@ def move_forward_one_cell():
             # 1) Safety/object check
             if first_loop:
                 # Initial lock to roll straight for half a second
-                lock_release_time = time.ticks_add(time.ticks_ms(), START_LOCK_MS)
+                lock_release_time = time.ticks_add(time.ticks_ms(), cfg.START_LOCK_MS)
                 first_loop = False
 
             # 3) During initial lock window, always drive straight
             if time.ticks_diff(time.ticks_ms(), lock_release_time) < 0:
-                motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
+                motors.set_speeds(cfg.STRAIGHT_CREEP, cfg.STRAIGHT_CREEP)
                 continue
             
             # 2) Read sensors
@@ -416,7 +420,7 @@ def move_forward_one_cell():
                 break
             
             # 4) Candidate intersection? lock heading immediately
-            if readings[0] >= BLACK_THRESH or readings[4] >= BLACK_THRESH:
+            if readings[0] >= cfg.BLACK_THRESH or readings[4] >= cfg.BLACK_THRESH:
                 motors_off()
                 flash_LEDS(GREEN,1)
                 move_forward_flag = False
@@ -426,15 +430,15 @@ def move_forward_one_cell():
             # 6) Normal P-control when not locked
             total = readings[0] + readings[1] + readings[2] + readings[3] + readings[4]
             if total == 0:
-                motors.set_speeds(STRAIGHT_CREEP, STRAIGHT_CREEP)
+                motors.set_speeds(cfg.STRAIGHT_CREEP, cfg.STRAIGHT_CREEP)
                 continue
             # weights: 0, 1000, 2000, 3000, 4000
             pos = (0*readings[0] + 1000*readings[1] + 2000*readings[2] + 3000*readings[3] + 4000*readings[4]) // total
-            error = pos - LINE_CENTER
-            correction = int(KP * error)
+            error = pos - cfg.LINE_CENTER
+            correction = int(cfg.KP * error)
 
-            left  = _clamp(BASE_SPEED + correction, MIN_SPD, MAX_SPD)
-            right = _clamp(BASE_SPEED - correction, MIN_SPD, MAX_SPD)
+            left  = _clamp(cfg.BASE_SPEED + correction, cfg.MIN_SPD, cfg.MAX_SPD)
+            right = _clamp(cfg.BASE_SPEED - correction, cfg.MIN_SPD, cfg.MAX_SPD)
             motors.set_speeds(left, right)
 
         time.sleep_ms(300)
@@ -459,7 +463,7 @@ def calibrate():
             motors_off()
             return
 
-        motors.set_speeds(CALIBRATE_SPEED, -CALIBRATE_SPEED)
+        motors.set_speeds(cfg.CALIBRATE_SPEED, -cfg.CALIBRATE_SPEED)
         line_sensors.calibrate()
         time.sleep_ms(5)
         
@@ -478,7 +482,7 @@ def calibrate():
         time.sleep_ms(1)
     pos[0], pos[1] = START_POS
     if 0 <= pos[0] < GRID_SIZE and 0 <= pos[1] < GRID_SIZE:
-        grid[row(pos[1])][pos[0]] = 2
+        grid[idx(pos[0], pos[1])] = 2
 
     motors_off()
     
@@ -486,11 +490,11 @@ def calibrate():
 def at_intersection_and_white():
     """
     Detect a 'clue':
-      - Center line sensor reads white ( < MIDDLE_WHITE_THRESH )
+      - Center line sensor reads white ( < cfg.MIDDLE_WHITE_THRESH )
     Returns bool.
     """
     r = line_sensors.read_calibrated()      # [0]..[4], center is [2]
-    if r[2] < MIDDLE_WHITE_THRESH:
+    if r[2] < cfg.MIDDLE_WHITE_THRESH:
         return True
     else:
         return False
@@ -506,7 +510,7 @@ def rotate_degrees(deg):
     Obeys 'running' flag and always cuts motors at the end.
     """
     #inch forward to make clean turn
-    motors.set_speeds(800, 800)
+    motors.set_speeds(cfg.BASE_SPEED, cfg.BASE_SPEED)
     time.sleep(.2)
     motors_off()
     
@@ -515,16 +519,16 @@ def rotate_degrees(deg):
         return
 
     if deg == 180 or deg == -180:
-        motors.set_speeds(TURN_SPEED, -TURN_SPEED)
-        if running: time.sleep(YAW_180_MS)
+        motors.set_speeds(cfg.TURN_SPEED, -cfg.TURN_SPEED)
+        if running: time.sleep(cfg.YAW_180_MS)
 
     elif deg == 90:
-        motors.set_speeds(TURN_SPEED, -TURN_SPEED)
-        if running: time.sleep(YAW_90_MS)
+        motors.set_speeds(cfg.TURN_SPEED, -cfg.TURN_SPEED)
+        if running: time.sleep(cfg.YAW_90_MS)
 
     elif deg == -90:
-        motors.set_speeds(-TURN_SPEED, TURN_SPEED)
-        if running: time.sleep(YAW_90_MS)
+        motors.set_speeds(-cfg.TURN_SPEED, cfg.TURN_SPEED)
+        if running: time.sleep(cfg.YAW_90_MS)
 
     motors_off()
 
@@ -565,14 +569,17 @@ def update_prob_map():
     """
     for y in range(GRID_SIZE):
         for x in range(GRID_SIZE):
-            if grid[row(y)][x] == 2:  # visited
-                prob_map[row(y)][x] = 0.0
+            i = idx(x, y)
+            if grid[i] == 2:  # visited
+                prob_map[i] = 0.0
                 continue
+          
             base = 1 / (GRID_SIZE * GRID_SIZE)
             clue_sum = 0.0
             for (cx, cy) in clues:
                 clue_sum += 5 / (1 + abs(x - cx) + abs(y - cy))
-            prob_map[row(y)][x] = base + clue_sum
+            prob_map[i] = base + clue_sum
+
 
 def edge_distance_from_side(x):
     """
@@ -628,9 +635,11 @@ def pick_goal():
     best_val = -1e9
     for y in range(GRID_SIZE):
         for x in range(GRID_SIZE):
-            if grid[row(y)][x] != 0:
+            i = idx(x, y)
+            if grid[i] != 0:
                 continue
-            val = prob_map[row(y)][x] * REWARD_FACTOR
+            val = reward_map[i] * REWARD_FACTOR
+
             if not first_clue_seen:
                 # Static nudge to keep targets in outer strips pre-clue
                 # (dynamic step cost in A* does the heavy lifting)
@@ -641,7 +650,7 @@ def pick_goal():
 
     if best is None:
         # Fallback: nearest unknown
-        unknowns = [(x, y) for y in range(GRID_SIZE) for x in range(GRID_SIZE) if grid[row(y)][x] == 0]
+        unknowns = [(x, y) for y in range(GRID_SIZE) for x in range(GRID_SIZE) if grid[idx(x, y)] == 0]
         if unknowns:
             best = min(unknowns, key=lambda c: abs(c[0] - pos[0]) + abs(c[1] - pos[1]))
     return best
@@ -655,7 +664,7 @@ def a_star(start, goal):
       +1 per step
       +1 turn penalty if direction changes
       + centerward_step_cost (pre-clue serpentine)
-      + VISITED_STEP_PENALTY if stepping onto a visited cell (grid==2)
+      + cfg.VISITED_STEP_PENALTY if stepping onto a visited cell (grid==2)
       + INTENT_PENALTY if stepping into the other's reserved next cell
       - prob_map * REWARD_FACTOR (seek high-reward cells)
     Returns a path as a list: [start, ..., goal], or [] if failure.
@@ -674,7 +683,8 @@ def a_star(start, goal):
             nx, ny = cx + dx, cy + dy
             if not (0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE):
                 continue
-            if grid[row(ny)][nx] == 1:  # 1 = obstacle/reserved
+            i = idx(nx, ny)
+            if grid[i] == 1:  # 1 = obstacle/reserved
                 continue
 
             new_cost = cost_so_far[current] + 1
@@ -683,12 +693,12 @@ def a_star(start, goal):
             if (dx, dy) != cur_dir:
                 new_cost += 1
 
-            # 🔹 Penalty for retracing visited cells
-            if grid[row(ny)][nx] == 2:   # 2 = visited
-                new_cost += VISITED_STEP_PENALTY
+            # 🔹 Penalty for retracing visited cell
+            if grid[i] == 2:   # 2 = visited
+                new_cost += cfg.VISITED_STEP_PENALTY
 
             # Reward shaping (prefer high reward)
-            new_cost -= prob_map[row(ny)][nx] * REWARD_FACTOR
+            new_cost -= reward_map[i] * REWARD_FACTOR
 
             # Pre-clue: penalize inward hops (serpentine)
             new_cost += centerward_step_cost(cx, nx)
@@ -775,7 +785,7 @@ def search_loop():
 
             # Arrived → update state & publish
             pos[0], pos[1] = nxt[0], nxt[1]
-            grid[row(pos[1])][pos[0]] = 2
+            grid[idx(pos[0], pos[1])] = 2
             publish_position()
             publish_visited(pos[0], pos[1])
 
