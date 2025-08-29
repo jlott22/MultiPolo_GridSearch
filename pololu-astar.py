@@ -611,6 +611,7 @@ def calibrate():
 
     motors_off()
     METRIC_START_TIME_MS = time.ticks_ms()
+    gc.collect()
     
 
 def at_intersection_and_white():
