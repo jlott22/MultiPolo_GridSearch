@@ -22,14 +22,6 @@
 #   * Adjust turn timings (cfg.YAW_90_MS/cfg.YAW_180_MS) to your platform.
 # ===========================================================
 
-'''
-TO-DO
-UPDATED 17AUG
-- figure out what current psotion does and why needed. 
-probably should be wieghted like intent. 
--test bump sensors
-'''
-
 import time
 import _thread
 import heapq
