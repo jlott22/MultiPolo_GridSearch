@@ -608,6 +608,7 @@ def calibrate():
 
     motors_off()
     METRIC_START_TIME_MS = time.ticks_ms()
+    gc.collect()
     
 
 def at_intersection_and_white():
@@ -792,7 +793,7 @@ def a_star(start, goal):
       + centerward_step_cost (pre-clue serpentine)
       + cfg.VISITED_STEP_PENALTY if stepping onto a visited cell (grid==2)
       + INTENT_PENALTY if stepping into the other's reserved next cell
-      - prob_map * REWARD_FACTOR (seek high-reward cells)
+    The reward from prob_map is applied as a bonus in the node priority.
     Returns a path as a list: [start, ..., goal], or [] if failure.
     """
     frontier.clear()
@@ -831,9 +832,6 @@ def a_star(start, goal):
             if grid[i] == 2:   # 2 = visited
                 new_cost += cfg.VISITED_STEP_PENALTY
 
-            # Reward shaping (prefer high reward)
-            new_cost -= prob_map[i] * REWARD_FACTOR
-
             # Pre-clue: penalize inward hops (serpentine)
             new_cost += centerward_step_cost(cx, nx)
 
@@ -845,7 +843,12 @@ def a_star(start, goal):
 
             if new_cost < cost_so_far[i]:
                 cost_so_far[i] = new_cost
-                priority = new_cost + abs(goal[0] - nx) + abs(goal[1] - ny)
+                priority = (
+                    new_cost
+                    + abs(goal[0] - nx)
+                    + abs(goal[1] - ny)
+                    - prob_map[i] * REWARD_FACTOR
+                )
                 heapq.heappush(frontier, (priority, i, (dx, dy)))
                 came_from[i] = current_idx
 
