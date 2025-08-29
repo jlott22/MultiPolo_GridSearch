@@ -43,6 +43,13 @@ from pololu_3pi_2040_robot.extras import editions
 DEBUG = True
 DEBUG_LOG_FILE = "debug-log.txt"
 
+METRICS_LOG_FILE = "metrics-log.txt"
+BOOT_TIME_MS = time.ticks_ms()
+intersection_visits = {}
+intersection_count = 0
+repeat_intersection_count = 0
+object_location = None  # set when object is found
+
 
 def debug_log(*args):
     """Write debug messages to a log file when DEBUG is enabled."""
@@ -55,11 +62,46 @@ def debug_log(*args):
         pass
 
 
+def record_intersection(x, y):
+    """Track intersection visits and repeated counts."""
+    global intersection_count, repeat_intersection_count
+    intersection_count += 1
+    key = (x, y)
+    if key in intersection_visits:
+        repeat_intersection_count += 1
+        intersection_visits[key] += 1
+    else:
+        intersection_visits[key] = 1
+
+
+def metrics_log():
+    """Write summary metrics for the search run."""
+    elapsed = time.ticks_diff(time.ticks_ms(), BOOT_TIME_MS)
+    try:
+        with open(METRICS_LOG_FILE, "w") as _fp:
+            _fp.write(
+                "elapsed_ms={},intersections={},repeats={},clues={},object={}\n".format(
+                    elapsed,
+                    intersection_count,
+                    repeat_intersection_count,
+                    clues,
+                    object_location,
+                )
+            )
+    except OSError:
+        pass
+
+
 if DEBUG:
     try:
         open(DEBUG_LOG_FILE, "w").close()
     except OSError:
         pass
+
+try:
+    open(METRICS_LOG_FILE, "w").close()
+except OSError:
+    pass
 
 # -----------------------------
 # Robot identity & start pose
@@ -204,15 +246,18 @@ def stop_all():
     found_object = True
     running = False
     motors_off()
+    metrics_log()
 
 def stop_and_alert_object():
     """
     Called when THIS robot detects the object via bump.
     Publishes alert and performs a global stop.
     """
+    global object_location
+    object_location = (pos[0], pos[1])
     publish_object(pos[0], pos[1])
     stop_all()
-    debug_log('object found: ' + str(pos[0], pos[1])
+    debug_log("object found:", pos[0], pos[1])
 
 flash_LEDS(GREEN,1)
 # ===========================================================
@@ -266,7 +311,7 @@ def handle_msg(line):
       - messages not from OTHER_ROBOT_ID **fix this for mmore bots
       - other status fields we don't currently need
     """
-    global other_intent, other_intent_time_ms, first_clue_seen
+    global other_intent, other_intent_time_ms, first_clue_seen, object_location
 
     # Minimal parsing: "<sender>/<topic>:<payload>"
     try:
@@ -305,6 +350,11 @@ def handle_msg(line):
 
     elif topic == "4": #object
         # Peer found the object → stop immediately
+        try:
+            x, y = map(int, payload.split(","))
+            object_location = (x, y)
+        except ValueError:
+            object_location = None
         stop_all()
         debug_log("object found by other robot")
 
@@ -813,6 +863,7 @@ def search_loop():
 
             # Clue detection: centered + white center sensor
             if at_intersection_and_white():
+                record_intersection(pos[0], pos[1])
                 clue = (pos[0], pos[1])
                 if clue not in clues:
                     clues.append(clue)
