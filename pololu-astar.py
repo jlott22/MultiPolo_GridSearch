@@ -7,7 +7,7 @@
 # - Behavior:
 #   * Before any clue: do an outside→in "lawn-mower" sweep on each half,
 #     encouraged by a higher center-ward cost than the turn cost.
-#   * After first clue: switch to reward-chasing (argmax reward_map).
+#   * After first clue: switch to reward-chasing (argmax derived from prob_map).
 #   * Intent reservation: publish your next cell; avoid the other's reserved cell.
 #   * Object is bump-only: on bump, publish alert and stop both robots immediately.
 #   * Clues are intersections where center line sensor is white (and robot is centered).
@@ -64,7 +64,7 @@ uart = UART(0, baudrate=115200, tx=28, rx=29)
 # -----------------------------
 grid = bytearray(GRID_SIZE * GRID_SIZE)  # 0=unknown, 1=obstacle (reserved), 2=visited
 prob_map = array('f', [1 / (GRID_SIZE * GRID_SIZE)] * (GRID_SIZE * GRID_SIZE))
-reward_map = array('f', [0.0] * (GRID_SIZE * GRID_SIZE))
+REWARD_FACTOR = 5
 clues = []                            # list of (x, y) clue cells
 
 
@@ -562,24 +562,24 @@ flash_LEDS(GREEN,1)
 # ===========================================================
 def update_prob_map():
     """
-    Recompute prob_map & reward_map.
+    Recompute prob_map.
     - Base uniform prior
     - Add Manhattan-decay bumps around all clues
-    - Visited cells get zero reward
+    - Visited cells get zero probability
     """
     for y in range(GRID_SIZE):
         for x in range(GRID_SIZE):
             i = idx(x, y)
             if grid[i] == 2:  # visited
                 prob_map[i] = 0.0
-                reward_map[i] = 0.0
                 continue
+          
             base = 1 / (GRID_SIZE * GRID_SIZE)
             clue_sum = 0.0
             for (cx, cy) in clues:
                 clue_sum += 5 / (1 + abs(x - cx) + abs(y - cy))
             prob_map[i] = base + clue_sum
-            reward_map[i] = prob_map[i] * 5
+
 
 def edge_distance_from_side(x):
     """
@@ -625,7 +625,8 @@ def i_should_yield(ix, iy):
 def pick_goal():
     """
     Choose a goal cell:
-      - Post-clue: pure argmax(reward_map) among unknown cells.
+      - Post-clue: pure argmax(reward) among unknown cells, where
+        reward = prob_map * REWARD_FACTOR.
       - Pre-clue: argmax(reward) but statically biased against center
                   via edge-distance (keeps goals in outer strips first).
     Fallback: nearest unknown if all rewards are flat.
@@ -637,7 +638,8 @@ def pick_goal():
             i = idx(x, y)
             if grid[i] != 0:
                 continue
-            val = reward_map[i]
+            val = prob_map[i] * REWARD_FACTOR
+
             if not first_clue_seen:
                 # Static nudge to keep targets in outer strips pre-clue
                 # (dynamic step cost in A* does the heavy lifting)
@@ -664,7 +666,7 @@ def a_star(start, goal):
       + centerward_step_cost (pre-clue serpentine)
       + cfg.VISITED_STEP_PENALTY if stepping onto a visited cell (grid==2)
       + INTENT_PENALTY if stepping into the other's reserved next cell
-      - reward_map (seek high-reward cells)
+      - prob_map * REWARD_FACTOR (seek high-reward cells)
     Returns a path as a list: [start, ..., goal], or [] if failure.
     """
     frontier = [(0, start, heading)]
@@ -696,7 +698,7 @@ def a_star(start, goal):
                 new_cost += cfg.VISITED_STEP_PENALTY
 
             # Reward shaping (prefer high reward)
-            new_cost -= reward_map[i]
+            new_cost -= prob_map[i] * REWARD_FACTOR
 
             # Pre-clue: penalize inward hops (serpentine)
             new_cost += centerward_step_cost(cx, nx)
@@ -731,7 +733,7 @@ flash_LEDS(GREEN,1)
 def search_loop():
     """
     High-level mission loop:
-      1) Update reward map
+      1) Update probability map
       2) Pick a goal (pre-clue sweep bias or post-clue reward chase)
       3) Plan with A* (costs include turn, center-ward, intent, reward)
       4) Publish intent → turn → advance one cell (with bump abort)
