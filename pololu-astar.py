@@ -205,7 +205,35 @@ DELIM = ord('-')
 # ---------- message builder ----------
 MSG_BUF_SIZE = 256
 msg_buf = bytearray(MSG_BUF_SIZE)
-msg_len = 0 
+msg_len = 0
+
+# ---------- outbound buffer ----------
+TX_BUF_SIZE = 64
+tx_buf = bytearray(TX_BUF_SIZE)
+
+def _write_int(buf, idx, val):
+    """Write an integer as ASCII into buf starting at idx.
+
+    Returns the new index after writing."""
+    if val < 0:
+        buf[idx] = ord('-')
+        idx += 1
+        val = -val
+    if val == 0:
+        buf[idx] = ord('0')
+        return idx + 1
+    # Determine number of digits
+    tmp = val
+    digits = 0
+    while tmp:
+        tmp //= 10
+        digits += 1
+    end = idx + digits
+    for _ in range(digits):
+        buf[end - 1] = ord('0') + (val % 10)
+        val //= 10
+        end -= 1
+    return idx + digits
 
 # -----------------------------
 # Hardware interfaces
@@ -277,33 +305,59 @@ flash_LEDS(GREEN,1)
 #   0013,4;0,1- robot 00 status update position (3,4), heading north
 #   00365-
 # ===========================================================
-def uart_send(topic, payload):
-    """Send a single line to ESP32; it forwards to MQTT."""
-    line = f"{topic}.{payload}-"
-    uart.write(line)
+def uart_send(topic, payload_len):
+    """Send the prepared message in tx_buf with topic and payload_len."""
+    tx_buf[0] = ord(topic)
+    tx_buf[1] = ord('.')
+    tx_buf[payload_len + 2] = ord('-')
+    uart.write(tx_buf[:payload_len + 3])
 
 def publish_position():
     """Publish current pose (for UI/diagnostics)."""
-    uart_send('1', f"{pos[0]},{pos[1]};{heading[0]},{heading[1]}")
+    i = 2
+    i = _write_int(tx_buf, i, pos[0])
+    tx_buf[i] = ord(','); i += 1
+    i = _write_int(tx_buf, i, pos[1])
+    tx_buf[i] = ord(';'); i += 1
+    i = _write_int(tx_buf, i, heading[0])
+    tx_buf[i] = ord(','); i += 1
+    i = _write_int(tx_buf, i, heading[1])
+    uart_send('1', i - 2)
 
 def publish_visited(x, y):
     """Publish that we visited cell (x,y)."""
-    uart_send('2', f"{x},{y}")
+    i = 2
+    i = _write_int(tx_buf, i, x)
+    tx_buf[i] = ord(','); i += 1
+    i = _write_int(tx_buf, i, y)
+    uart_send('2', i - 2)
 
 def publish_clue(x, y):
     """Publish a clue at (x,y)."""
-    uart_send('3', f"{x},{y}")
+    i = 2
+    i = _write_int(tx_buf, i, x)
+    tx_buf[i] = ord(','); i += 1
+    i = _write_int(tx_buf, i, y)
+    uart_send('3', i - 2)
 
 def publish_object(x, y):
     """Publish that we found the object at (x,y)."""
-    uart_send('4', f"{x},{y}")
+    i = 2
+    i = _write_int(tx_buf, i, x)
+    tx_buf[i] = ord(','); i += 1
+    i = _write_int(tx_buf, i, y)
+    uart_send('4', i - 2)
 
 def publish_intent(x, y):
     """
     Publish our intended next cell (reservation).
     Other robot will penalize stepping into this cell for INTENT_TTL_MS.
     """
-    uart_send('5', f"{x},{y}")
+    i = 2
+    i = _write_int(tx_buf, i, x)
+    tx_buf[i] = ord(','); i += 1
+    i = _write_int(tx_buf, i, y)
+    uart_send('5', i - 2)
 
 def handle_msg(line):
     """
