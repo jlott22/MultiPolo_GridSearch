@@ -40,11 +40,90 @@ from machine import UART, Pin
 from pololu_3pi_2040_robot import robot
 from pololu_3pi_2040_robot.extras import editions
 
+DEBUG = True
+DEBUG_LOG_FILE = "debug-log.txt"
+
+METRICS_LOG_FILE = "metrics-log.txt"
+BOOT_TIME_MS = time.ticks_ms()
+METRIC_START_TIME_MS = None  # set after first post-calibration intersection
+intersection_visits = {}
+intersection_count = 0
+repeat_intersection_count = 0
+object_location = None  # set when object is found
+
+
+def debug_log(*args):
+    """Write debug messages to a log file when DEBUG is enabled.
+
+    Each entry is stamped with milliseconds since boot and failures are
+    reported to the console.
+    """
+    if not DEBUG:
+        return
+
+    elapsed_ms = time.ticks_diff(time.ticks_ms(), BOOT_TIME_MS)
+    message = " ".join(str(a) for a in args)
+    try:
+        with open(DEBUG_LOG_FILE, "a") as _fp:
+            _fp.write(f"{elapsed_ms} {message}\n")
+    except (OSError, MemoryError) as e:
+        # Fall back to console output so the error is not lost
+        try:
+            print("DEBUG_LOG_ERROR:", e)
+        except Exception:
+            pass
+
+
+def record_intersection(x, y):
+    """Track intersection visits and repeated counts."""
+    global intersection_count, repeat_intersection_count
+    intersection_count += 1
+    key = (x, y)
+    if key in intersection_visits:
+        repeat_intersection_count += 1
+        intersection_visits[key] += 1
+    else:
+        intersection_visits[key] = 1
+
+
+def metrics_log():
+    """Write summary metrics for the search run."""
+    start = METRIC_START_TIME_MS if METRIC_START_TIME_MS is not None else BOOT_TIME_MS
+    elapsed = time.ticks_diff(time.ticks_ms(), start)
+    try:
+        with open(METRICS_LOG_FILE, "w") as _fp:
+            _fp.write(
+                "elapsed_ms={},intersections={},repeats={},clues={},object={}\n".format(
+                    elapsed,
+                    intersection_count,
+                    repeat_intersection_count,
+                    clues,
+                    object_location,
+                )
+            )
+    except OSError:
+        pass
+
+
+if DEBUG:
+    try:
+        open(DEBUG_LOG_FILE, "w").close()
+    except (OSError, MemoryError) as e:
+        try:
+            print("DEBUG_LOG_INIT_ERROR:", e)
+        except Exception:
+            pass
+
+try:
+    open(METRICS_LOG_FILE, "w").close()
+except OSError:
+    pass
+
 # -----------------------------
 # Robot identity & start pose
 # -----------------------------
-ROBOT_ID = "01"                         
-OTHER_ROBOT_ID = "00" 
+ROBOT_ID = "00"
+OTHER_ROBOT_ID = "01"
 GRID_SIZE = 5
 
 # Starting position & heading (grid coordinates, cardinal heading)
@@ -106,12 +185,12 @@ class MotionConfig:
         self.VISITED_STEP_PENALTY = 1.2
         self.KP = 0.5                # proportional gain around LINE_CENTER
         self.CALIBRATE_SPEED = 1130  # speed to rotate when calibrating
-        self.BASE_SPEED = 800        # nominal wheel speed
-        self.MIN_SPD = 400           # clamp low (avoid stall)
-        self.MAX_SPD = 1200          # clamp high
+        self.BASE_SPEED = 1000        # nominal wheel speed
+        self.MIN_SPD = 600           # clamp low (avoid stall)
+        self.MAX_SPD = 1400          # clamp high
         self.LINE_CENTER = 2000      # weighted position target (0..4000)
         self.BLACK_THRESH = 600      # calibrated "black" threshold (0..1000)
-        self.STRAIGHT_CREEP = 600    # forward speed while "locked" straight
+        self.STRAIGHT_CREEP = 900    # forward speed while "locked" straight
         self.START_LOCK_MS = 500     # hold straight this long after function starts
         self.TURN_SPEED = 1000
         self.YAW_90_MS = 0.3
@@ -183,14 +262,19 @@ def stop_all():
     found_object = True
     running = False
     motors_off()
+    metrics_log()
 
 def stop_and_alert_object():
     """
     Called when THIS robot detects the object via bump.
     Publishes alert and performs a global stop.
     """
+    global object_location
+    object_location = (pos[0], pos[1])
     publish_object(pos[0], pos[1])
     stop_all()
+    debug_log('object found:', pos[0], pos[1])
+    flash_LEDS(BLUE, 1)
 
 flash_LEDS(GREEN,1)
 # ===========================================================
@@ -244,7 +328,7 @@ def handle_msg(line):
       - messages not from OTHER_ROBOT_ID **fix this for mmore bots
       - other status fields we don't currently need
     """
-    global other_intent, other_intent_time_ms, first_clue_seen
+    global other_intent, other_intent_time_ms, first_clue_seen, object_location
 
     # Minimal parsing: "<sender>/<topic>:<payload>"
     try:
@@ -265,7 +349,7 @@ def handle_msg(line):
             i = idx(x, y)
             if grid[i] == 0:
                 grid[i] = 2
-                print('visited updated')
+                debug_log('visited updated:', i)
 
     elif topic == "3":   #clue
         try:
@@ -278,19 +362,24 @@ def handle_msg(line):
                 clues.append(clue)
                 first_clue_seen = True
                 update_prob_map()
+                debug_log('clue updated:', clue)
                 gc.collect()
-                print('clue updated')
 
     elif topic == "4": #object
         # Peer found the object → stop immediately
+        try:
+            x, y = map(int, payload.split(","))
+            object_location = (x, y)
+        except ValueError:
+            object_location = None
         stop_all()
-        print('object updated')
+        debug_log("object found by other robot")
 
     elif topic == "1": #position, heading
         if ";" not in payload:
             return
         other_location, other_heading = payload.split(";")
-        print('recivded position')
+        debug_log('received position/heading:', f"{other_location}/{other_heading}")
 
     elif topic == "5": #intent
         try:
@@ -299,7 +388,7 @@ def handle_msg(line):
             return
         other_intent = (ix, iy)
         other_intent_time_ms = time.ticks_ms()
-        print('intent processed')
+        debug_log('intended next move:', other_intent)
 
 # ---------- ring buffer helpers ----------
 def rb_put_byte(b):
@@ -334,14 +423,14 @@ def uart_service():
     data = uart.read()     # returns None or bytes object
     if not data:
         return
-    print('Data Read: ', data)
+    debug_log('Data Read:', data)
     for b in data:         # iterate over bytes
         rb_put_byte(b)
     while True:
         msg = rb_pull_into_msg()
         if msg is None:
             break
-        print('msg: ', msg)
+        debug_log('msg:', msg)
         handle_msg(msg)
 
 # ===========================================================
@@ -350,32 +439,6 @@ def uart_service():
 flash_LEDS(GREEN,1)
 def _clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
-'''
-def weighted_position(readings):
-    """
-    readings: 5 calibrated values (0..1000)
-    returns: int position 0..4000, or None if no line detected
-    """
-    total = readings[0] + readings[1] + readings[2] + readings[3] + readings[4]
-    if total == 0:
-        return None
-    # weights: 0, 1000, 2000, 3000, 4000
-    pos = (0*readings[0] + 1000*readings[1] + 2000*readings[2]
-           + 3000*readings[3] + 4000*readings[4]) // total
-    return pos
-
-def intersection_check(readings):
-    """True if left outer OR right outer sees black (handles T-intersections)."""
-    return (readings[0] >= cfg.BLACK_THRESH) or (readings[4] >= cfg.BLACK_THRESH)
-
-def bumped():
-    """Return True only if a bumper is pressed """
-    bump.read()
-    if bump.left_is_pressed() or bump.right_is_pressed():
-        return True
-    else:
-        return False
-'''
 
 def move_forward_one_cell():
     """
@@ -450,9 +513,10 @@ def calibrate():
     establish min/max values.  The robot should be placed one cell behind its
     intended starting position; after calibration it drives forward to the
     first intersection and updates the global ``pos`` to ``START_POS`` so the
-    caller sees that intersection as the starting point of the search.
+    caller sees that intersection as the starting point of the search. The
+    metric timer begins once this intersection is reached.
     """
-    global pos, move_forward_flag
+    global pos, move_forward_flag, METRIC_START_TIME_MS
 
     # 1) Spin in place to expose sensors to both edges of the line.
     #    A single full rotation is enough, so spin in one direction while
@@ -485,6 +549,7 @@ def calibrate():
         grid[idx(pos[0], pos[1])] = 2
 
     motors_off()
+    METRIC_START_TIME_MS = time.ticks_ms()
     
 
 def at_intersection_and_white():
@@ -784,6 +849,7 @@ def search_loop():
                 time.sleep_ms(1)
 
             # Arrived → update state & publish
+            record_intersection(pos[0], pos[1])
             pos[0], pos[1] = nxt[0], nxt[1]
             grid[idx(pos[0], pos[1])] = 2
             publish_position()
@@ -813,6 +879,7 @@ _thread.start_new_thread(move_forward_one_cell, ())
 
 # Kick off the mission
 try:
+    debug_log('Pololu running')
     search_loop()
 finally:
     # Ensure absolutely everything is stopped
