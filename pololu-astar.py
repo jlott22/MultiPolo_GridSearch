@@ -185,12 +185,12 @@ class MotionConfig:
         self.VISITED_STEP_PENALTY = 1.2
         self.KP = 0.5                # proportional gain around LINE_CENTER
         self.CALIBRATE_SPEED = 1130  # speed to rotate when calibrating
-        self.BASE_SPEED = 800        # nominal wheel speed
-        self.MIN_SPD = 400           # clamp low (avoid stall)
-        self.MAX_SPD = 1200          # clamp high
+        self.BASE_SPEED = 1000        # nominal wheel speed
+        self.MIN_SPD = 600           # clamp low (avoid stall)
+        self.MAX_SPD = 1400          # clamp high
         self.LINE_CENTER = 2000      # weighted position target (0..4000)
         self.BLACK_THRESH = 600      # calibrated "black" threshold (0..1000)
-        self.STRAIGHT_CREEP = 600    # forward speed while "locked" straight
+        self.STRAIGHT_CREEP = 900    # forward speed while "locked" straight
         self.START_LOCK_MS = 500     # hold straight this long after function starts
         self.TURN_SPEED = 1000
         self.YAW_90_MS = 0.3
