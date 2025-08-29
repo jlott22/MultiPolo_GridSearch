@@ -40,11 +40,32 @@ from machine import UART, Pin
 from pololu_3pi_2040_robot import robot
 from pololu_3pi_2040_robot.extras import editions
 
+DEBUG = False
+DEBUG_LOG_FILE = "debug.log"
+
+
+def debug_log(*args):
+    """Write debug messages to a log file when DEBUG is enabled."""
+    if not DEBUG:
+        return
+    try:
+        with open(DEBUG_LOG_FILE, "a") as _fp:
+            _fp.write(" ".join(str(a) for a in args) + "\n")
+    except OSError:
+        pass
+
+
+if DEBUG:
+    try:
+        open(DEBUG_LOG_FILE, "w").close()
+    except OSError:
+        pass
+
 # -----------------------------
 # Robot identity & start pose
 # -----------------------------
-ROBOT_ID = "01"                         
-OTHER_ROBOT_ID = "00" 
+ROBOT_ID = "01"
+OTHER_ROBOT_ID = "00"
 GRID_SIZE = 5
 
 # Starting position & heading (grid coordinates, cardinal heading)
@@ -265,7 +286,7 @@ def handle_msg(line):
             i = idx(x, y)
             if grid[i] == 0:
                 grid[i] = 2
-                print('visited updated')
+                debug_log('visited updated')
 
     elif topic == "3":   #clue
         try:
@@ -279,18 +300,18 @@ def handle_msg(line):
                 first_clue_seen = True
                 update_prob_map()
                 gc.collect()
-                print('clue updated')
+                debug_log('clue updated')
 
     elif topic == "4": #object
         # Peer found the object → stop immediately
         stop_all()
-        print('object updated')
+        debug_log('object updated')
 
     elif topic == "1": #position, heading
         if ";" not in payload:
             return
         other_location, other_heading = payload.split(";")
-        print('recivded position')
+        debug_log('recivded position')
 
     elif topic == "5": #intent
         try:
@@ -299,7 +320,7 @@ def handle_msg(line):
             return
         other_intent = (ix, iy)
         other_intent_time_ms = time.ticks_ms()
-        print('intent processed')
+        debug_log('intent processed')
 
 # ---------- ring buffer helpers ----------
 def rb_put_byte(b):
@@ -334,14 +355,14 @@ def uart_service():
     data = uart.read()     # returns None or bytes object
     if not data:
         return
-    print('Data Read: ', data)
+    debug_log('Data Read:', data)
     for b in data:         # iterate over bytes
         rb_put_byte(b)
     while True:
         msg = rb_pull_into_msg()
         if msg is None:
             break
-        print('msg: ', msg)
+        debug_log('msg:', msg)
         handle_msg(msg)
 
 # ===========================================================
