@@ -8,7 +8,7 @@
 #   * Before any clue: do an outside→in "lawn-mower" sweep on each half,
 #     encouraged by a higher center-ward cost than the turn cost.
 #   * After first clue: switch to reward-chasing (argmax derived from prob_map).
-#   * Intent reservation: publish your next cell; avoid the other's reserved cell.
+#   * Intent reservation: publish your next cell; avoid the other's reserved or occupied cell.
 #   * Object is bump-only: on bump, publish alert and stop both robots immediately.
 #   * Clues are intersections where center line sensor is white (and robot is centered).
 #
@@ -168,6 +168,8 @@ move_forward_flag = False
 
 # Intent reservations from peers: peer_id -> (x, y)
 peer_intent = {}
+# Last reported positions from peers: peer_id -> (x, y)
+peer_pos = {}
 
 # -----------------------------
 # Soft split (pre-clue only)
@@ -203,7 +205,7 @@ class MotionConfig:
 cfg = MotionConfig()
 
 # Intent settings
-INTENT_PENALTY = 8.0     # strong penalty to avoid stepping into the other's reserved cell
+INTENT_PENALTY = 8.0     # strong penalty to avoid stepping into the other's reserved or occupied cell
 
 #UART handling globals
 # ---------- ring buffer ----------
@@ -388,7 +390,7 @@ def handle_msg(line):
     Ignores:
       - other status fields we don't currently need
     """
-    global peer_intent, first_clue_seen, object_location
+    global peer_intent, peer_pos, first_clue_seen, object_location
 
     # Minimal parsing: "<sender>/<topic>:<payload>"
     try:
@@ -440,6 +442,11 @@ def handle_msg(line):
             return
         other_location, other_heading = payload.split(";")
         debug_log('received position/heading:', f"{other_location}/{other_heading}")
+        try:
+            ox, oy = map(int, other_location.split(","))
+        except ValueError:
+            return
+        peer_pos[sender] = (ox, oy)
 
     elif topic == "5": #intent
         try:
@@ -740,12 +747,12 @@ def is_peer_intent_active(peer_id):
     return peer_id in peer_intent
 
 def i_should_yield(ix, iy):
-    """Deterministic back-off on intent collision.
-    Lower ID yields if both reserve the same cell (rare but possible).
-    """
-    my_id = int(ROBOT_ID)
-    for pid, intent in peer_intent.items():
-        if intent == (ix, iy) and my_id > int(pid):
+    """Yield if a peer reserved or currently occupies (ix, iy)."""
+    for pid, (px, py) in peer_intent.items():
+        if (px, py) == (ix, iy):
+            return True
+    for pid, (px, py) in peer_pos.items():
+        if (px, py) == (ix, iy):
             return True
     return False
 
@@ -792,7 +799,7 @@ def a_star(start, goal):
       +1 turn penalty if direction changes
       + centerward_step_cost (pre-clue serpentine)
       + cfg.VISITED_STEP_PENALTY if stepping onto a visited cell (grid==2)
-      + INTENT_PENALTY if stepping into the other's reserved next cell
+      + INTENT_PENALTY if stepping into the other's reserved next cell or current position
     The reward from prob_map is applied as a bonus in the node priority.
     Returns a path as a list: [start, ..., goal], or [] if failure.
     """
@@ -835,11 +842,16 @@ def a_star(start, goal):
             # Pre-clue: penalize inward hops (serpentine)
             new_cost += centerward_step_cost(cx, nx)
 
-            # Reservation: avoid peers' intended next cells
-            for pid, intent in peer_intent.items():
-                if intent == (nx, ny):
+            # Reservation: avoid peers' intended next cells and current positions
+            for pid, (ix, iy) in peer_intent.items():
+                if (ix, iy) == (nx, ny):
                     new_cost += INTENT_PENALTY
                     break
+            else:
+                for pid, (px, py) in peer_pos.items():
+                    if (px, py) == (nx, ny):
+                        new_cost += INTENT_PENALTY
+                        break
 
             if new_cost < cost_so_far[i]:
                 cost_so_far[i] = new_cost
@@ -876,7 +888,7 @@ def search_loop():
     High-level mission loop:
       1) Update probability map
       2) Pick a goal (pre-clue sweep bias or post-clue reward chase)
-      3) Plan with A* (costs include turn, center-ward, intent, reward)
+      3) Plan with A* (costs include turn, center-ward, intent/position, reward)
       4) Publish intent → turn → advance one cell (with bump abort)
       5) Mark visited, publish status, detect clue (intersection/white)
       6) Repeat until object found or no goals remain
@@ -909,6 +921,12 @@ def search_loop():
 
             # Reserve the next cell so the other robot yields if it wanted the same
             publish_intent(nxt[0], nxt[1])
+
+            # Give peers a moment to publish their intent and process it
+            for _ in range(5):
+                uart_service()
+                time.sleep_ms(10)
+
             if i_should_yield(nxt[0], nxt[1]):
                 # Short back-off then replan
                 time.sleep_ms(300)
