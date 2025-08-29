@@ -120,8 +120,8 @@ except OSError:
 # -----------------------------
 # Robot identity & start pose
 # -----------------------------
-ROBOT_ID = "01"
-OTHER_ROBOT_ID = "00"
+ROBOT_ID = "00"
+OTHER_ROBOT_ID = "01"
 GRID_SIZE = 5
 
 # Starting position & heading (grid coordinates, cardinal heading)
@@ -272,6 +272,7 @@ def stop_and_alert_object():
     publish_object(pos[0], pos[1])
     stop_all()
     debug_log('object found:', pos[0], pos[1])
+    flash_LEDS(BLUE, 1)
 
 flash_LEDS(GREEN,1)
 # ===========================================================
@@ -436,32 +437,6 @@ def uart_service():
 flash_LEDS(GREEN,1)
 def _clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
-'''
-def weighted_position(readings):
-    """
-    readings: 5 calibrated values (0..1000)
-    returns: int position 0..4000, or None if no line detected
-    """
-    total = readings[0] + readings[1] + readings[2] + readings[3] + readings[4]
-    if total == 0:
-        return None
-    # weights: 0, 1000, 2000, 3000, 4000
-    pos = (0*readings[0] + 1000*readings[1] + 2000*readings[2]
-           + 3000*readings[3] + 4000*readings[4]) // total
-    return pos
-
-def intersection_check(readings):
-    """True if left outer OR right outer sees black (handles T-intersections)."""
-    return (readings[0] >= cfg.BLACK_THRESH) or (readings[4] >= cfg.BLACK_THRESH)
-
-def bumped():
-    """Return True only if a bumper is pressed """
-    bump.read()
-    if bump.left_is_pressed() or bump.right_is_pressed():
-        return True
-    else:
-        return False
-'''
 
 def move_forward_one_cell():
     """
@@ -870,6 +845,7 @@ def search_loop():
                 time.sleep_ms(1)
 
             # Arrived → update state & publish
+            record_intersection(pos[0], pos[1])
             pos[0], pos[1] = nxt[0], nxt[1]
             grid[idx(pos[0], pos[1])] = 2
             publish_position()
@@ -877,7 +853,6 @@ def search_loop():
 
             # Clue detection: centered + white center sensor
             if at_intersection_and_white():
-                record_intersection(pos[0], pos[1])
                 clue = (pos[0], pos[1])
                 if clue not in clues:
                     clues.append(clue)
