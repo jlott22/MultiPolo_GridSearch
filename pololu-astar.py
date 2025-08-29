@@ -32,6 +32,18 @@ from machine import UART, Pin
 from pololu_3pi_2040_robot import robot
 from pololu_3pi_2040_robot.extras import editions
 from pololu_3pi_2040_robot.buzzer import Buzzer
+'''
+Accurate object reporting, need to update location before reporting.
+bulletproof intent, ran into eachother still
+make grid bigger
+make computer interfact that logs at the end
+
+'''
+# -----------------------------
+# Robot identity & start pose
+# -----------------------------
+ROBOT_ID = "00"  # set to "00", "01", "02", or "03" at deployment
+GRID_SIZE = 5
 
 DEBUG = False
 DEBUG_LOG_FILE = "debug-log.txt"
@@ -111,12 +123,6 @@ try:
     open(METRICS_LOG_FILE, "w").close()
 except OSError:
     pass
-
-# -----------------------------
-# Robot identity & start pose
-# -----------------------------
-ROBOT_ID = "00"  # set to "00", "01", "02", or "03" at deployment
-GRID_SIZE = 5
 
 # Starting position & heading (grid coordinates, cardinal heading)
 # pos = (x, y)    heading = (dx, dy) where (0,1)=N, (1,0)=E, (0,-1)=S, (-1,0)=W
