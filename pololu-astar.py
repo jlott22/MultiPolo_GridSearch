@@ -115,18 +115,22 @@ except OSError:
 # -----------------------------
 # Robot identity & start pose
 # -----------------------------
-ROBOT_ID = "01"
-OTHER_ROBOT_ID = "00"
+ROBOT_ID = "00"  # set to "00", "01", "02", or "03" at deployment
+OTHER_ROBOT_ID = "01"
 GRID_SIZE = 5
 
 # Starting position & heading (grid coordinates, cardinal heading)
 # pos = (x, y)    heading = (dx, dy) where (0,1)=N, (1,0)=E, (0,-1)=S, (-1,0)=W
-if ROBOT_ID == "00":
-    START_POS = (0, 0)  # southern bot 00 starts facing north
-    START_HEADING = (0, 1)
-else:
-    START_POS = (GRID_SIZE -1 , GRID_SIZE -1)  # northern bot, 01, starts facing south
-    START_HEADING = (0, -1)
+START_CONFIG = {
+    "00": ((0, 0), (0, 1)),                       # SW corner, facing north
+    "01": ((GRID_SIZE - 1, GRID_SIZE - 1), (0, -1)),  # NE corner, facing south
+    "02": ((0, GRID_SIZE - 1), (1, 0)),           # NW corner, facing east
+    "03": ((GRID_SIZE - 1, 0), (-1, 0)),          # SE corner, facing west
+}
+try:
+    START_POS, START_HEADING = START_CONFIG[ROBOT_ID]
+except KeyError as e:
+    raise ValueError("ROBOT_ID must be one of '00', '01', '02', or '03'") from e
 
 # UART0 for ESP32 communication (TX=GP28, RX=GP29)
 uart = UART(0, baudrate=115200, tx=28, rx=29)
