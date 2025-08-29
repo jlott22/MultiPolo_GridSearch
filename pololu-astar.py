@@ -45,6 +45,7 @@ DEBUG_LOG_FILE = "debug-log.txt"
 
 METRICS_LOG_FILE = "metrics-log.txt"
 BOOT_TIME_MS = time.ticks_ms()
+METRIC_START_TIME_MS = None  # set after first post-calibration intersection
 intersection_visits = {}
 intersection_count = 0
 repeat_intersection_count = 0
@@ -87,7 +88,8 @@ def record_intersection(x, y):
 
 def metrics_log():
     """Write summary metrics for the search run."""
-    elapsed = time.ticks_diff(time.ticks_ms(), BOOT_TIME_MS)
+    start = METRIC_START_TIME_MS if METRIC_START_TIME_MS is not None else BOOT_TIME_MS
+    elapsed = time.ticks_diff(time.ticks_ms(), start)
     try:
         with open(METRICS_LOG_FILE, "w") as _fp:
             _fp.write(
@@ -511,9 +513,10 @@ def calibrate():
     establish min/max values.  The robot should be placed one cell behind its
     intended starting position; after calibration it drives forward to the
     first intersection and updates the global ``pos`` to ``START_POS`` so the
-    caller sees that intersection as the starting point of the search.
+    caller sees that intersection as the starting point of the search. The
+    metric timer begins once this intersection is reached.
     """
-    global pos, move_forward_flag
+    global pos, move_forward_flag, METRIC_START_TIME_MS
 
     # 1) Spin in place to expose sensors to both edges of the line.
     #    A single full rotation is enough, so spin in one direction while
@@ -546,6 +549,7 @@ def calibrate():
         grid[idx(pos[0], pos[1])] = 2
 
     motors_off()
+    METRIC_START_TIME_MS = time.ticks_ms()
     
 
 def at_intersection_and_white():
