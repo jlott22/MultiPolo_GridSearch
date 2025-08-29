@@ -745,7 +745,7 @@ def i_should_yield(ix, iy):
     """
     my_id = int(ROBOT_ID)
     for pid, intent in peer_intent.items():
-        if intent == (ix, iy) and my_id > int(pid):
+        if intent == (ix, iy):
             return True
     return False
 
