@@ -311,12 +311,19 @@ def stop_and_alert_object():
     """
     Called when THIS robot detects the object via bump.
     Publishes alert and performs a global stop.
+
+    The robot may bump into the object before reaching the next
+    intersection, leaving ``pos`` pointing to the last intersection it
+    successfully crossed.  Report the object at the *next* intersection in
+    the current heading direction so external consumers know where it is.
     """
     global object_location
-    object_location = (pos[0], pos[1])
-    publish_object(pos[0], pos[1])
+    next_x = pos[0] + heading[0]
+    next_y = pos[1] + heading[1]
+    object_location = (next_x, next_y)
+    publish_object(next_x, next_y)
     stop_all()
-    debug_log('object found:', pos[0], pos[1])
+    debug_log('object found:', next_x, next_y)
     flash_LEDS(BLUE, 1)
 
 flash_LEDS(GREEN,1)
