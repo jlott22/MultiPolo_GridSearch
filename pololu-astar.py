@@ -31,8 +31,9 @@ from array import array
 from machine import UART, Pin
 from pololu_3pi_2040_robot import robot
 from pololu_3pi_2040_robot.extras import editions
+from pololu_3pi_2040_robot.buzzer import Buzzer
 
-DEBUG = True
+DEBUG = False
 DEBUG_LOG_FILE = "debug-log.txt"
 
 METRICS_LOG_FILE = "metrics-log.txt"
@@ -186,17 +187,17 @@ SWITCH_COL_BASE = 0.3    # small base penalty for switching columns (pre-clue)
 # -----------------------------
 class MotionConfig:
     def __init__(self):
-        self.MIDDLE_WHITE_THRESH = 800  # center sensor threshold for "white" (tune by calibration)
+        self.MIDDLE_WHITE_THRESH = 200  # center sensor threshold for "white" (tune by calibration) 
         self.VISITED_STEP_PENALTY = 1.2
         self.KP = 0.5                # proportional gain around LINE_CENTER
         self.CALIBRATE_SPEED = 1130  # speed to rotate when calibrating
-        self.BASE_SPEED = 1000        # nominal wheel speed
-        self.MIN_SPD = 600           # clamp low (avoid stall)
-        self.MAX_SPD = 1400          # clamp high
+        self.BASE_SPEED = 800        # nominal wheel speed
+        self.MIN_SPD = 400           # clamp low (avoid stall)
+        self.MAX_SPD = 1200          # clamp high
         self.LINE_CENTER = 2000      # weighted position target (0..4000)
         self.BLACK_THRESH = 600      # calibrated "black" threshold (0..1000)
         self.STRAIGHT_CREEP = 900    # forward speed while "locked" straight
-        self.START_LOCK_MS = 500     # hold straight this long after function starts
+        self.START_LOCK_MS = 300     # hold straight this long after function starts
         self.TURN_SPEED = 1000
         self.YAW_90_MS = 0.3
         self.YAW_180_MS = 0.6
@@ -256,6 +257,7 @@ line_sensors = robot.LineSensors()
 bump = robot.BumpSensors()
 rgb_leds = robot.RGBLEDs()
 rgb_leds.set_brightness(10)
+buzzer = Buzzer()
 
 # ===========================================================
 # Utility: Motors & Stop Control
@@ -276,6 +278,9 @@ def flash_LEDS(color, n):
             rgb_leds.set(led, OFF)
         rgb_leds.show()
         time.sleep_ms(100)
+        
+def buzz():
+    buzzer.play("O2c4")
 
         
 flash_LEDS(GREEN,1)
@@ -534,20 +539,19 @@ def move_forward_one_cell():
             # 2) Read sensors
             readings = line_sensors.read_calibrated()
             
-            bump.read()
-            if bump.left_is_pressed() or bump.right_is_pressed():
-                stop_and_alert_object()
-                motors_off()
-                move_forward_flag = False
-                break
-            
-            # 4) Candidate intersection? lock heading immediately
             if readings[0] >= cfg.BLACK_THRESH or readings[4] >= cfg.BLACK_THRESH:
                 motors_off()
                 flash_LEDS(GREEN,1)
                 move_forward_flag = False
                 first_loop = True
                 break
+            
+            bump.read()
+            if bump.left_is_pressed() or bump.right_is_pressed():
+                stop_and_alert_object()
+                motors_off()
+                move_forward_flag = False
+                break    
 
             # 6) Normal P-control when not locked
             total = readings[0] + readings[1] + readings[2] + readings[3] + readings[4]
@@ -619,6 +623,7 @@ def at_intersection_and_white():
     """
     r = line_sensors.read_calibrated()      # [0]..[4], center is [2]
     if r[2] < cfg.MIDDLE_WHITE_THRESH:
+        buzzer.play("O2c4")
         return True
     else:
         return False
@@ -633,14 +638,15 @@ def rotate_degrees(deg):
     deg ∈ {-180, -90, 0, 90, 180}
     Obeys 'running' flag and always cuts motors at the end.
     """
-    #inch forward to make clean turn
-    motors.set_speeds(cfg.BASE_SPEED, cfg.BASE_SPEED)
-    time.sleep(.2)
-    motors_off()
     
     if deg == 0 or not running:
         motors_off()
         return
+    
+    #inch forward to make clean turn
+    motors.set_speeds(cfg.BASE_SPEED, cfg.BASE_SPEED)
+    time.sleep(.15)
+    motors_off()
 
     if deg == 180 or deg == -180:
         motors.set_speeds(cfg.TURN_SPEED, -cfg.TURN_SPEED)
