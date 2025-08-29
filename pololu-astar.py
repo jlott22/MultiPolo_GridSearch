@@ -138,6 +138,15 @@ prob_map = array('f', [1 / (GRID_SIZE * GRID_SIZE)] * (GRID_SIZE * GRID_SIZE))
 REWARD_FACTOR = 5
 clues = []                            # list of (x, y) clue cells
 
+# Preallocated structures for A* planning
+# --------------------------------------
+# Arrays hold parent index and path cost for each cell.  They are cleared and
+# reused on every planning iteration to avoid per-call allocations which are
+# expensive on MicroPython.
+came_from = array('i', [-1] * (GRID_SIZE * GRID_SIZE))
+cost_so_far = array('f', [0.0] * (GRID_SIZE * GRID_SIZE))
+frontier = []
+
 
 def idx(x, y):
     """Convert Cartesian (x, y) to linear index in map arrays."""
@@ -780,16 +789,24 @@ def a_star(start, goal):
       - prob_map * REWARD_FACTOR (seek high-reward cells)
     Returns a path as a list: [start, ..., goal], or [] if failure.
     """
-    frontier = [(0, start, heading)]
-    came_from = {start: None}
-    cost_so_far = {start: 0}
+    frontier.clear()
+    for i in range(GRID_SIZE * GRID_SIZE):
+        came_from[i] = -1
+        cost_so_far[i] = 1e30
+
+    start_idx = idx(start[0], start[1])
+    goal_idx = idx(goal[0], goal[1])
+    heapq.heappush(frontier, (0, start_idx, heading))
+    came_from[start_idx] = start_idx
+    cost_so_far[start_idx] = 0.0
 
     while frontier and running and not found_object:
-        _, current, cur_dir = heapq.heappop(frontier)
-        if current == goal:
+        _, current_idx, cur_dir = heapq.heappop(frontier)
+        if current_idx == goal_idx:
             break
 
-        cx, cy = current
+        cx = current_idx % GRID_SIZE
+        cy = GRID_SIZE - 1 - (current_idx // GRID_SIZE)
         for dx, dy in ((1,0),(-1,0),(0,1),(0,-1)):
             nx, ny = cx + dx, cy + dy
             if not (0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE):
@@ -798,7 +815,7 @@ def a_star(start, goal):
             if grid[i] == 1:  # 1 = obstacle/reserved
                 continue
 
-            new_cost = cost_so_far[current] + 1
+            new_cost = cost_so_far[current_idx] + 1
 
             # Turning penalty
             if (dx, dy) != cur_dir:
@@ -818,21 +835,23 @@ def a_star(start, goal):
             if is_other_intent_active() and (nx, ny) == other_intent:
                 new_cost += INTENT_PENALTY
 
-            nxt = (nx, ny)
-            if (nxt not in cost_so_far) or (new_cost < cost_so_far[nxt]):
-                cost_so_far[nxt] = new_cost
+            if new_cost < cost_so_far[i]:
+                cost_so_far[i] = new_cost
                 priority = new_cost + abs(goal[0] - nx) + abs(goal[1] - ny)
-                heapq.heappush(frontier, (priority, nxt, (dx, dy)))
-                came_from[nxt] = current
+                heapq.heappush(frontier, (priority, i, (dx, dy)))
+                came_from[i] = current_idx
 
-    if goal not in came_from:
+    if came_from[goal_idx] == -1:
         return []
 
     # Reconstruct path
-    path, cur = [], goal
-    while cur != start:
-        path.append(cur)
-        cur = came_from[cur]
+    path = []
+    cur_idx = goal_idx
+    while cur_idx != start_idx:
+        x = cur_idx % GRID_SIZE
+        y = GRID_SIZE - 1 - (cur_idx // GRID_SIZE)
+        path.append((x, y))
+        cur_idx = came_from[cur_idx]
     path.reverse()
     return [start] + path
 
@@ -870,7 +889,7 @@ def search_loop():
                 break
 
             path = a_star(tuple(pos), goal)
-            # a_star allocates several temporary structures; collect to free them
+            # Maintain low memory usage between planning iterations
             gc.collect()
             if len(path) < 2:
                 break
