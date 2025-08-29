@@ -638,7 +638,7 @@ def pick_goal():
             i = idx(x, y)
             if grid[i] != 0:
                 continue
-            val = reward_map[i] * REWARD_FACTOR
+            val = prob_map[i] * REWARD_FACTOR
 
             if not first_clue_seen:
                 # Static nudge to keep targets in outer strips pre-clue
@@ -698,7 +698,7 @@ def a_star(start, goal):
                 new_cost += cfg.VISITED_STEP_PENALTY
 
             # Reward shaping (prefer high reward)
-            new_cost -= reward_map[i] * REWARD_FACTOR
+            new_cost -= prob_map[i] * REWARD_FACTOR
 
             # Pre-clue: penalize inward hops (serpentine)
             new_cost += centerward_step_cost(cx, nx)
