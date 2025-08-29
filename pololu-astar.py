@@ -116,7 +116,6 @@ except OSError:
 # Robot identity & start pose
 # -----------------------------
 ROBOT_ID = "00"  # set to "00", "01", "02", or "03" at deployment
-OTHER_ROBOT_ID = "01"
 GRID_SIZE = 5
 
 # Starting position & heading (grid coordinates, cardinal heading)
@@ -167,9 +166,8 @@ found_object = False                   # set True on bump or peer alert
 first_clue_seen = False                # once True, we disable lawn-mower bias
 move_forward_flag = False
 
-# Intent reservation from the other robot
-other_intent = None                    # (x, y) or None
-other_intent_time_ms = 0
+# Intent reservations from peers: peer_id -> (x, y)
+peer_intent = {}
 
 # -----------------------------
 # Soft split (pre-clue only)
@@ -205,7 +203,6 @@ class MotionConfig:
 cfg = MotionConfig()
 
 # Intent settings
-INTENT_TTL_MS = 1200     # reservation lifetime
 INTENT_PENALTY = 8.0     # strong penalty to avoid stepping into the other's reserved cell
 
 #UART handling globals
@@ -369,7 +366,7 @@ def publish_object(x, y):
 def publish_intent(x, y):
     """
     Publish our intended next cell (reservation).
-    Other robot will penalize stepping into this cell for INTENT_TTL_MS.
+    Other robots will avoid stepping into this cell until a new intent is published.
     """
     i = 2
     i = _write_int(tx_buf, i, x)
@@ -389,10 +386,9 @@ def handle_msg(line):
     005.7,2-       # topic 5: intent
 
     Ignores:
-      - messages not from OTHER_ROBOT_ID **fix this for mmore bots
       - other status fields we don't currently need
     """
-    global other_intent, other_intent_time_ms, first_clue_seen, object_location
+    global peer_intent, first_clue_seen, object_location
 
     # Minimal parsing: "<sender>/<topic>:<payload>"
     try:
@@ -450,9 +446,8 @@ def handle_msg(line):
             ix, iy = map(int, payload.split(","))
         except ValueError:
             return
-        other_intent = (ix, iy)
-        other_intent_time_ms = time.ticks_ms()
-        debug_log('intended next move:', other_intent)
+        peer_intent[sender] = (ix, iy)
+        debug_log('intended next move:', sender, peer_intent[sender])
 
 # ---------- ring buffer helpers ----------
 def rb_put_byte(b):
@@ -739,18 +734,19 @@ def centerward_step_cost(curr_x, next_x):
         cost += CENTER_STEP * (d_curr - d_next)
     return cost
 
-def is_other_intent_active():
-    """True if the other's reservation is still fresh."""
-    if other_intent is None:
-        return False
-    return time.ticks_diff(time.ticks_ms(), other_intent_time_ms) <= INTENT_TTL_MS
+def is_peer_intent_active(peer_id):
+    """True if we have a reservation from the given peer."""
+    return peer_id in peer_intent
 
 def i_should_yield(ix, iy):
-    """
-    Deterministic back-off on intent collision.
+    """Deterministic back-off on intent collision.
     Lower ID yields if both reserve the same cell (rare but possible).
     """
-    return (other_intent == (ix, iy)) and (ROBOT_ID < OTHER_ROBOT_ID)
+    my_id = int(ROBOT_ID)
+    for pid, intent in peer_intent.items():
+        if intent == (ix, iy) and my_id > int(pid):
+            return True
+    return False
 
 def pick_goal():
     """
@@ -841,9 +837,11 @@ def a_star(start, goal):
             # Pre-clue: penalize inward hops (serpentine)
             new_cost += centerward_step_cost(cx, nx)
 
-            # Reservation: avoid other's intended next cell
-            if is_other_intent_active() and (nx, ny) == other_intent:
-                new_cost += INTENT_PENALTY
+            # Reservation: avoid peers' intended next cells
+            for pid, intent in peer_intent.items():
+                if intent == (nx, ny):
+                    new_cost += INTENT_PENALTY
+                    break
 
             if new_cost < cost_so_far[i]:
                 cost_so_far[i] = new_cost
