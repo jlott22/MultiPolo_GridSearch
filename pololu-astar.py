@@ -168,7 +168,6 @@ move_forward_flag = False
 
 # Intent reservations from peers: peer_id -> (x, y)
 peer_intent = {}
-peer_intent_time = {}
 
 # -----------------------------
 # Soft split (pre-clue only)
@@ -204,7 +203,6 @@ class MotionConfig:
 cfg = MotionConfig()
 
 # Intent settings
-INTENT_TTL_MS = 1200     # reservation lifetime
 INTENT_PENALTY = 8.0     # strong penalty to avoid stepping into the other's reserved cell
 
 #UART handling globals
@@ -368,7 +366,7 @@ def publish_object(x, y):
 def publish_intent(x, y):
     """
     Publish our intended next cell (reservation).
-    Other robot will penalize stepping into this cell for INTENT_TTL_MS.
+    Other robots will avoid stepping into this cell until a new intent is published.
     """
     i = 2
     i = _write_int(tx_buf, i, x)
@@ -390,7 +388,7 @@ def handle_msg(line):
     Ignores:
       - other status fields we don't currently need
     """
-    global peer_intent, peer_intent_time, first_clue_seen, object_location
+    global peer_intent, first_clue_seen, object_location
 
     # Minimal parsing: "<sender>/<topic>:<payload>"
     try:
@@ -449,7 +447,6 @@ def handle_msg(line):
         except ValueError:
             return
         peer_intent[sender] = (ix, iy)
-        peer_intent_time[sender] = time.ticks_ms()
         debug_log('intended next move:', sender, peer_intent[sender])
 
 # ---------- ring buffer helpers ----------
@@ -739,10 +736,8 @@ def centerward_step_cost(curr_x, next_x):
     return cost
 
 def is_peer_intent_active(peer_id):
-    """True if the given peer's reservation is still fresh."""
-    if peer_id not in peer_intent or peer_id not in peer_intent_time:
-        return False
-    return time.ticks_diff(time.ticks_ms(), peer_intent_time[peer_id]) <= INTENT_TTL_MS
+    """True if we have a reservation from the given peer."""
+    return peer_id in peer_intent
 
 def i_should_yield(ix, iy):
     """Deterministic back-off on intent collision.
@@ -750,7 +745,7 @@ def i_should_yield(ix, iy):
     """
     my_id = int(ROBOT_ID)
     for pid, intent in peer_intent.items():
-        if intent == (ix, iy) and my_id > int(pid) and is_peer_intent_active(pid):
+        if intent == (ix, iy) and my_id > int(pid):
             return True
     return False
 
@@ -842,7 +837,7 @@ def a_star(start, goal):
 
             # Reservation: avoid peers' intended next cells
             for pid, intent in peer_intent.items():
-                if is_peer_intent_active(pid) and intent == (nx, ny):
+                if intent == (nx, ny):
                     new_cost += INTENT_PENALTY
                     break
 
