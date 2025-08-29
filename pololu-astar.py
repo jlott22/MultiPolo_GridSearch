@@ -40,8 +40,8 @@ from machine import UART, Pin
 from pololu_3pi_2040_robot import robot
 from pololu_3pi_2040_robot.extras import editions
 
-DEBUG = False
-DEBUG_LOG_FILE = "debug.log"
+DEBUG = True
+DEBUG_LOG_FILE = "debug-log.txt"
 
 
 def debug_log(*args):
@@ -212,6 +212,7 @@ def stop_and_alert_object():
     """
     publish_object(pos[0], pos[1])
     stop_all()
+    debug_log('object found: ' + str(pos[0], pos[1])
 
 flash_LEDS(GREEN,1)
 # ===========================================================
@@ -286,7 +287,7 @@ def handle_msg(line):
             i = idx(x, y)
             if grid[i] == 0:
                 grid[i] = 2
-                debug_log('visited updated')
+                debug_log('visited updated: '+ str(i))
 
     elif topic == "3":   #clue
         try:
@@ -299,19 +300,19 @@ def handle_msg(line):
                 clues.append(clue)
                 first_clue_seen = True
                 update_prob_map()
+                debug_log('clue updated: ' + str(i))
                 gc.collect()
-                debug_log('clue updated')
 
     elif topic == "4": #object
         # Peer found the object → stop immediately
         stop_all()
-        debug_log('object updated')
+        debug_log("object found by other robot")
 
     elif topic == "1": #position, heading
         if ";" not in payload:
             return
         other_location, other_heading = payload.split(";")
-        debug_log('recivded position')
+        debug_log('recivded position/heading: ' + str(other_location) + '/' + str(other_heading))
 
     elif topic == "5": #intent
         try:
@@ -320,7 +321,7 @@ def handle_msg(line):
             return
         other_intent = (ix, iy)
         other_intent_time_ms = time.ticks_ms()
-        debug_log('intent processed')
+        debug_log('intended next move: ' + str(other_intent))
 
 # ---------- ring buffer helpers ----------
 def rb_put_byte(b):
@@ -834,6 +835,7 @@ _thread.start_new_thread(move_forward_one_cell, ())
 
 # Kick off the mission
 try:
+    debug_log('Pololu running')
     search_loop()
 finally:
     # Ensure absolutely everything is stopped
