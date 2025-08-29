@@ -54,17 +54,17 @@ object_location = None  # set when object is found
 def debug_log(*args):
     """Write debug messages to a log file when DEBUG is enabled.
 
-    Each entry is timestamped and failures are reported to the console.
+    Each entry is stamped with milliseconds since boot and failures are
+    reported to the console.
     """
     if not DEBUG:
         return
 
-    timestamp = time.localtime()
-    ts = "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(*timestamp[:6])
+    elapsed_ms = time.ticks_diff(time.ticks_ms(), BOOT_TIME_MS)
     message = " ".join(str(a) for a in args)
     try:
         with open(DEBUG_LOG_FILE, "a") as _fp:
-            _fp.write(f"{ts} {message}\n")
+            _fp.write(f"{elapsed_ms} {message}\n")
     except (OSError, MemoryError) as e:
         # Fall back to console output so the error is not lost
         try:
