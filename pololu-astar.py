@@ -45,21 +45,35 @@ DEBUG_LOG_FILE = "debug-log.txt"
 
 
 def debug_log(*args):
-    """Write debug messages to a log file when DEBUG is enabled."""
+    """Write debug messages to a log file when DEBUG is enabled.
+
+    Each entry is timestamped and failures are reported to the console.
+    """
     if not DEBUG:
         return
+
+    timestamp = time.localtime()
+    ts = "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(*timestamp[:6])
+    message = " ".join(str(a) for a in args)
     try:
         with open(DEBUG_LOG_FILE, "a") as _fp:
-            _fp.write(" ".join(str(a) for a in args) + "\n")
-    except OSError:
-        pass
+            _fp.write(f"{ts} {message}\n")
+    except (OSError, MemoryError) as e:
+        # Fall back to console output so the error is not lost
+        try:
+            print("DEBUG_LOG_ERROR:", e)
+        except Exception:
+            pass
 
 
 if DEBUG:
     try:
         open(DEBUG_LOG_FILE, "w").close()
-    except OSError:
-        pass
+    except (OSError, MemoryError) as e:
+        try:
+            print("DEBUG_LOG_INIT_ERROR:", e)
+        except Exception:
+            pass
 
 # -----------------------------
 # Robot identity & start pose
@@ -212,7 +226,7 @@ def stop_and_alert_object():
     """
     publish_object(pos[0], pos[1])
     stop_all()
-    debug_log('object found: ' + str(pos[0], pos[1])
+    debug_log('object found:', pos[0], pos[1])
 
 flash_LEDS(GREEN,1)
 # ===========================================================
@@ -287,7 +301,7 @@ def handle_msg(line):
             i = idx(x, y)
             if grid[i] == 0:
                 grid[i] = 2
-                debug_log('visited updated: '+ str(i))
+                debug_log('visited updated:', i)
 
     elif topic == "3":   #clue
         try:
@@ -300,7 +314,7 @@ def handle_msg(line):
                 clues.append(clue)
                 first_clue_seen = True
                 update_prob_map()
-                debug_log('clue updated: ' + str(i))
+                debug_log('clue updated:', clue)
                 gc.collect()
 
     elif topic == "4": #object
@@ -312,7 +326,7 @@ def handle_msg(line):
         if ";" not in payload:
             return
         other_location, other_heading = payload.split(";")
-        debug_log('recivded position/heading: ' + str(other_location) + '/' + str(other_heading))
+        debug_log('received position/heading:', f"{other_location}/{other_heading}")
 
     elif topic == "5": #intent
         try:
@@ -321,7 +335,7 @@ def handle_msg(line):
             return
         other_intent = (ix, iy)
         other_intent_time_ms = time.ticks_ms()
-        debug_log('intended next move: ' + str(other_intent))
+        debug_log('intended next move:', other_intent)
 
 # ---------- ring buffer helpers ----------
 def rb_put_byte(b):
