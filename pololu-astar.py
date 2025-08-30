@@ -92,22 +92,22 @@ def record_intersection(x, y):
 
 
 def metrics_log():
-    """Write summary metrics for the search run."""
+    """Write summary metrics for the search run and publish them."""
     start = METRIC_START_TIME_MS if METRIC_START_TIME_MS is not None else BOOT_TIME_MS
     elapsed = time.ticks_diff(time.ticks_ms(), start)
+    metrics = "elapsed_ms={},intersections={},repeats={},clues={},object={}".format(
+        elapsed,
+        intersection_count,
+        repeat_intersection_count,
+        clues,
+        object_location,
+    )
     try:
         with open(METRICS_LOG_FILE, "w") as _fp:
-            _fp.write(
-                "elapsed_ms={},intersections={},repeats={},clues={},object={}\n".format(
-                    elapsed,
-                    intersection_count,
-                    repeat_intersection_count,
-                    clues,
-                    object_location,
-                )
-            )
+            _fp.write(metrics + "\n")
     except OSError:
         pass
+    publish_command("METRICS:" + metrics)
 
 
 if DEBUG:
@@ -171,6 +171,7 @@ running = True                         # master run flag
 found_object = False                   # set True on bump or peer alert
 first_clue_seen = False                # once True, we disable lawn-mower bias
 move_forward_flag = False
+start_search = False                   # becomes True when command '1' is received
 
 # Intent reservations from peers: peer_id -> (x, y)
 peer_intent = {}
@@ -227,7 +228,7 @@ msg_buf = bytearray(MSG_BUF_SIZE)
 msg_len = 0
 
 # ---------- outbound buffer ----------
-TX_BUF_SIZE = 64
+TX_BUF_SIZE = 128
 tx_buf = bytearray(TX_BUF_SIZE)
 
 def _write_int(buf, idx, val):
@@ -382,6 +383,16 @@ def publish_intent(x, y):
     i = _write_int(tx_buf, i, y)
     uart_send('5', i - 2)
 
+def publish_command(msg):
+    """Publish a command/response string on topic 6."""
+    i = 2
+    for ch in msg:
+        if i >= TX_BUF_SIZE - 1:
+            break
+        tx_buf[i] = ord(ch)
+        i += 1
+    uart_send('6', i - 2)
+
 def handle_msg(line):
     """
     Parse and apply incoming messages from the other robot.
@@ -461,6 +472,34 @@ def handle_msg(line):
             return
         peer_intent[sender] = (ix, iy)
         debug_log('intended next move:', sender, peer_intent[sender])
+
+    elif topic == "6":  # command/configuration
+        global start_search
+        cmd = payload.strip()
+        if cmd == "1":
+            start_search = True
+            return
+        if "=" in cmd:
+            key, val = cmd.split("=", 1)
+            key = key.strip()
+            val = val.strip()
+            applied = False
+            try:
+                if key == "BASE_SPEED":
+                    cfg.BASE_SPEED = int(val)
+                    applied = True
+                elif key == "KP":
+                    cfg.KP = float(val)
+                    applied = True
+                elif key == "CALIBRATE_SPEED":
+                    cfg.CALIBRATE_SPEED = int(val)
+                    applied = True
+            except ValueError:
+                pass
+            if applied:
+                publish_command(f"ACK:{key}={val}")
+            else:
+                publish_command(f"ERR:{cmd}")
 
 # ---------- ring buffer helpers ----------
 def rb_put_byte(b):
@@ -892,22 +931,27 @@ flash_LEDS(GREEN,1)
 def search_loop():
     """
     High-level mission loop:
-      1) Update probability map
-      2) Pick a goal (pre-clue sweep bias or post-clue reward chase)
-      3) Plan with A* (costs include turn, center-ward, intent/position, reward)
-      4) Publish intent → turn → advance one cell (with bump abort)
-      5) Mark visited, publish status, detect clue (intersection/white)
-      6) Repeat until object found or no goals remain
+      1) Wait for start command after calibration
+      2) Update probability map
+      3) Pick a goal (pre-clue sweep bias or post-clue reward chase)
+      4) Plan with A* (costs include turn, center-ward, intent/position, reward)
+      5) Publish intent → turn → advance one cell (with bump abort)
+      6) Mark visited, publish status, detect clue (intersection/white)
+      7) Repeat until object found or no goals remain
     Always cuts motors in a finally block.
     """
-    global first_clue_seen, move_forward_flag
+    global first_clue_seen, move_forward_flag, METRIC_START_TIME_MS, start_search
 
     try:
         calibrate()
+        while running and not start_search:
+            uart_service()
+            time.sleep_ms(10)
+        METRIC_START_TIME_MS = time.ticks_ms()
         update_prob_map()
         publish_position()
         publish_visited(pos[0], pos[1])
-        
+
         while running and not found_object:
             # free any unused memory from previous iteration to avoid
             # MicroPython allocation failures during long searches
@@ -982,6 +1026,7 @@ try:
     debug_log('Pololu running')
     search_loop()
 finally:
+    metrics_log()
     # Ensure absolutely everything is stopped
     running = False
     stop_all()
