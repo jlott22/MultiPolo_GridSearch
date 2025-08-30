@@ -1,5 +1,6 @@
 #include <WiFi.h>
 #include "ESP32MQTTClient.h"
+#include <vector>
 
 // Wi-Fi credentials
 const char *ssid = "USDresearch";
@@ -15,12 +16,7 @@ String pubpositiontopic = clientID + "1";  //STATUS FOR CURRENT POSITIONING
 String pubalerttopic = clientID + "4";  //ALERT FOR OBJECTS FOUND
 String pubcluetopic = clientID + "3";  //TOPIC FOR CLUES/FOOTPRINTS/JEWELS FOUND
 String pubintenttopic = clientID + "5";  //STATUS FOR CURRENT INTENT
-String otherID = "00";
-String subvisitedtopic = otherID + "2"; 
-String subpositiontopic = otherID + "1";  
-String subalerttopic = otherID + "4";  
-String subcluetopic = otherID + "3";  
-String subintenttopic = otherID + "5";  //STATUS FOR CURRENT INTENT
+std::vector<String> otherIDs = {"00", "02", "03"};
 const char *lastWillMessage = "disconnected"; // Last Will message
 
 ESP32MQTTClient mqttClient; // MQTT client object
@@ -43,23 +39,17 @@ void onMqttConnect(esp_mqtt_client_handle_t client)
         mqttClient.publish(pubpositiontopic.c_str(), "connected", 0, false);
         Serial.println("Connected to MQTT Broker first time");
 
-        // sub to MQTT topics
-        mqttClient.subscribe(subpositiontopic, [](const String &payload) {
-          frameToRobot('1', otherID, payload);
-        });
-        mqttClient.subscribe(subvisitedtopic, [](const String &payload) {
-          frameToRobot('2', otherID, payload);
-        });
-        mqttClient.subscribe(subcluetopic, [](const String &payload) {
-          frameToRobot('3', otherID, payload);
-        });
-        mqttClient.subscribe(subalerttopic, [](const String &payload) {
-          frameToRobot('4', otherID, payload);
-        });
-        mqttClient.subscribe(subintenttopic, [](const String &payload) {
-          frameToRobot('5', otherID, payload);
-        });
-
+        // Subscribe to MQTT topics for each peer
+        for (const String &peer : otherIDs)
+        {
+            for (char topicDigit = '1'; topicDigit <= '5'; ++topicDigit)
+            {
+                String topic = peer + topicDigit;
+                mqttClient.subscribe(topic.c_str(), [topicDigit, peer](const String &payload) {
+                    frameToRobot(topicDigit, peer, payload);
+                });
+            }
+        }
 
         Serial.println("Subscribed to topics first time");
     }
@@ -119,21 +109,16 @@ void loop()
             mqttClient.publish(pubpositiontopic.c_str(), "Reconnected", 0, false);
 
             // Resubscribe to topics after reconnection
-            mqttClient.subscribe(subpositiontopic, [](const String &payload) {
-              frameToRobot('1', otherID, payload);
-            });
-            mqttClient.subscribe(subvisitedtopic, [](const String &payload) {
-              frameToRobot('2', otherID, payload);
-            });
-            mqttClient.subscribe(subcluetopic, [](const String &payload) {
-              frameToRobot('3', otherID, payload);
-            });
-            mqttClient.subscribe(subalerttopic, [](const String &payload) {
-              frameToRobot('4', otherID, payload);
-            });
-            mqttClient.subscribe(subintenttopic, [](const String &payload) {
-              frameToRobot('5', otherID, payload);
-            });
+            for (const String &peer : otherIDs)
+            {
+                for (char topicDigit = '1'; topicDigit <= '5'; ++topicDigit)
+                {
+                    String topic = peer + topicDigit;
+                    mqttClient.subscribe(topic.c_str(), [topicDigit, peer](const String &payload) {
+                        frameToRobot(topicDigit, peer, payload);
+                    });
+                }
+            }
 
         }
     }
