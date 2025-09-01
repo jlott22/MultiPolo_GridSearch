@@ -65,6 +65,7 @@ DEBUG_LOG_FILE = "debug-log.txt"
 METRICS_LOG_FILE = "metrics-log.txt"
 BOOT_TIME_MS = time.ticks_ms()
 METRIC_START_TIME_MS = None  # set after first post-calibration intersection
+start_signal = False  # set when hub command received
 intersection_visits = {}
 intersection_count = 0
 repeat_intersection_count = 0
@@ -106,22 +107,22 @@ def record_intersection(x, y):
 
 
 def metrics_log():
-    """Write summary metrics for the search run."""
+    """Write summary metrics for the search run and return it."""
     start = METRIC_START_TIME_MS if METRIC_START_TIME_MS is not None else BOOT_TIME_MS
     elapsed = time.ticks_diff(time.ticks_ms(), start)
+    summary = "elapsed_ms={},intersections={},repeats={},clues={},object={}".format(
+        elapsed,
+        intersection_count,
+        repeat_intersection_count,
+        clues,
+        object_location,
+    )
     try:
         with open(METRICS_LOG_FILE, "w") as _fp:
-            _fp.write(
-                "elapsed_ms={},intersections={},repeats={},clues={},object={}\n".format(
-                    elapsed,
-                    intersection_count,
-                    repeat_intersection_count,
-                    clues,
-                    object_location,
-                )
-            )
+            _fp.write(summary + "\n")
     except OSError:
         pass
+    return summary
 
 
 if DEBUG:
@@ -319,7 +320,8 @@ def stop_all():
     found_object = True
     running = False
     motors_off()
-    metrics_log()
+    summary = metrics_log()
+    publish_result(summary)
 
 def stop_and_alert_object():
     """
@@ -344,7 +346,7 @@ flash_LEDS(GREEN,1)
 # ===========================================================
 # UART Messaging
 # Format: "<topic#>:<payload>\n"
-# position = 1, visited = 2, clue = 3, alert = 4, intent = 5
+# position = 1, visited = 2, clue = 3, alert = 4, intent = 5, result = 6
 # Examples:
 #   0013,4;0,1- robot 00 status update position (3,4), heading north
 #   00365-
@@ -403,9 +405,13 @@ def publish_intent(x, y):
     i = _write_int(tx_buf, i, y)
     uart_send('5', i - 2)
 
+def publish_result(msg):
+    """Publish final search metrics or result to the hub."""
+    uart.write("6." + msg + "-")
+
 def handle_msg(line):
     """
-    Parse and apply incoming messages from the other robot.
+    Parse and apply incoming messages from the other robot or hub.
 
     Accepts:
     011.3,4;0,1-   # topic 1: position+heading
@@ -413,11 +419,12 @@ def handle_msg(line):
     003.5,2-       # topic 3: clue
     004.6,1-       # topic 4: object/alert
     005.7,2-       # topic 5: intent
+    996.1-         # topic 6: hub command
 
     Ignores:
       - other status fields we don't currently need
     """
-    global peer_intent, peer_pos, first_clue_seen, object_location
+    global peer_intent, peer_pos, first_clue_seen, object_location, start_signal
 
     # Minimal parsing: "<sender>/<topic>:<payload>"
     try:
@@ -482,6 +489,9 @@ def handle_msg(line):
             return
         peer_intent[sender] = (ix, iy)
         debug_log('intended next move:', sender, peer_intent[sender])
+    elif topic == "6":  # hub command
+        if payload.strip() == "1":
+            start_signal = True
 
 # ---------- ring buffer helpers ----------
 def rb_put_byte(b):
@@ -921,13 +931,19 @@ def search_loop():
       6) Repeat until object found or no goals remain
     Always cuts motors in a finally block.
     """
-    global first_clue_seen, move_forward_flag
+    global first_clue_seen, move_forward_flag, start_signal, METRIC_START_TIME_MS
 
     try:
         calibrate()
         update_prob_map()
         publish_position()
         publish_visited(pos[0], pos[1])
+
+        # wait for hub start command
+        while not start_signal:
+            uart_service()
+            time.sleep_ms(10)
+        METRIC_START_TIME_MS = time.ticks_ms()
         
         while running and not found_object:
             # free any unused memory from previous iteration to avoid
