@@ -46,7 +46,7 @@ HardwareSerial robotSerial(2); // UART2 for Pololu communication
 
 // Reconnection tracking
 unsigned long lastReconnectAttempt = 0;
-const unsigned long reconnectInterval = 5000; // 5 seconds
+const unsigned long reconnectInterval = 4000; // 4 seconds
 
 void frameToRobot(char topicDigit, const String& senderID, const String& payload);
 
@@ -82,8 +82,8 @@ void onMqttConnect(esp_mqtt_client_handle_t client)
 void setup()
 {
     // Initialize debugging
-    Serial.begin(230400);
-    robotSerial.begin(230400, SERIAL_8N1, RXD2, TXD2);
+    Serial.begin(115200);
+    robotSerial.begin(115200, SERIAL_8N1, RXD2, TXD2);
 
     // Connect to Wi-Fi
     Serial.println("Connecting to Wi-Fi...");
