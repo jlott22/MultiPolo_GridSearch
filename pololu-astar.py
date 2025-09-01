@@ -118,7 +118,7 @@ def metrics_log():
         object_location,
     )
     try:
-        with open(METRICS_LOG_FILE, "w") as _fp:
+        with open(METRICS_LOG_FILE, "a") as _fp:
             _fp.write(summary + "\n")
     except OSError:
         pass
@@ -127,7 +127,7 @@ def metrics_log():
 
 if DEBUG:
     try:
-        open(DEBUG_LOG_FILE, "w").close()
+        open(DEBUG_LOG_FILE, "a").close()
     except (OSError, MemoryError) as e:
         try:
             print("DEBUG_LOG_INIT_ERROR:", e)
@@ -135,7 +135,7 @@ if DEBUG:
             pass
 
 try:
-    open(METRICS_LOG_FILE, "w").close()
+    open(METRICS_LOG_FILE, "a").close()
 except OSError:
     pass
 
