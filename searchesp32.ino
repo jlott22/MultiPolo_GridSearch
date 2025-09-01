@@ -32,6 +32,8 @@ String pubpositiontopic = clientID + "1";  //STATUS FOR CURRENT POSITIONING
 String pubalerttopic = clientID + "4";  //ALERT FOR OBJECTS FOUND
 String pubcluetopic = clientID + "3";  //TOPIC FOR CLUES/FOOTPRINTS/JEWELS FOUND
 String pubintenttopic = clientID + "5";  //STATUS FOR CURRENT INTENT
+const char *hubCommandTopic = "hub/command"; // shared hub command topic
+const char *pubresulttopic = "search/results"; // shared search result topic
 std::vector<String> otherIDs = {"00", "02", "03"};
 const char *lastWillMessage = "disconnected"; // Last Will message
 
@@ -66,6 +68,12 @@ void onMqttConnect(esp_mqtt_client_handle_t client)
                 });
             }
         }
+
+        // Subscribe to hub command topic
+        mqttClient.subscribe(hubCommandTopic, [](const String &payload) {
+            String hub = "99";
+            frameToRobot('6', hub, payload);
+        });
 
         Serial.println("Subscribed to topics first time");
     }
@@ -136,6 +144,11 @@ void loop()
                 }
             }
 
+            mqttClient.subscribe(hubCommandTopic, [](const String &payload) {
+                String hub = "99";
+                frameToRobot('6', hub, payload);
+            });
+
         }
     }
 
@@ -151,7 +164,7 @@ void loop()
           serialBuffer.trim(); // remove any unwanted whitespace
 
           // Remove trailing '-' and process
-          String full_msg = serialBuffer.substring(0, serialBuffer.length());
+          String full_msg = serialBuffer.substring(0, serialBuffer.length() - 1);
           serialBuffer = "";
           handlemsg(full_msg); //publish message to proper topic
         }
@@ -178,7 +191,7 @@ void frameToRobot (char topicDigit, const String &senderID, const String &payloa
   bool hasTerminator = payload.length() && payload.charAt(payload.length()-1) == '-';
 
   robotSerial.print(senderID);       // "00", "01", ...
-  robotSerial.print(topicDigit);     // '1'..'5'
+  robotSerial.print(topicDigit);     // '1'..'6'
   robotSerial.print('.');
   robotSerial.print(payload);        // very likely already ends with '-'
   if (!hasTerminator) robotSerial.print('-');
@@ -200,6 +213,10 @@ void sendtoMQTT(String topic, String msg) {
   }
   else if (topic == "5") {
     mqttClient.publish(pubintenttopic.c_str(), msg, 0, false);
+  }
+  else if (topic == "6") {
+    String payload = clientID + ":" + msg;
+    mqttClient.publish(pubresulttopic, payload, 0, false);
   }
 }
 
