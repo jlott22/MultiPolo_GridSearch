@@ -299,8 +299,20 @@ def flash_LEDS(color, n):
         rgb_leds.show()
         time.sleep_ms(100)
         
-def buzz():
-    buzzer.play("O2c4")
+def buzz(event):
+    """
+    Play short chirps for turn, intersection, clue,
+    and a longer sequence for object.
+    """
+    if event == "turn":
+        buzzer.play("O5c16")            # short high chirp
+    elif event == "intersection":
+        buzzer.play("O4g16")            # short mid chirp
+    elif event == "clue":
+        buzzer.play("O6e16")            # short very high chirp
+    elif event == "object":
+        buzzer.play("O4c8e8g8c5")       # longer sequence, rising melody
+
 
         
 flash_LEDS(GREEN,1)
@@ -338,6 +350,7 @@ def stop_and_alert_object():
     next_y = pos[1] + heading[1]
     object_location = (next_x, next_y)
     publish_object(next_x, next_y)
+    buzz('object')
     stop_all()
     debug_log('object found:', next_x, next_y)
     flash_LEDS(BLUE, 1)
@@ -663,7 +676,7 @@ def at_intersection_and_white():
     """
     r = line_sensors.read_calibrated()      # [0]..[4], center is [2]
     if r[2] < cfg.MIDDLE_WHITE_THRESH:
-        buzzer.play("O2c4")
+        buzz('intersection')
         return True
     else:
         return False
@@ -689,6 +702,7 @@ def rotate_degrees(deg):
     motors_off()
 
     if deg == 180 or deg == -180:
+        buzz('turn')
         motors.set_speeds(cfg.TURN_SPEED, -cfg.TURN_SPEED)
         if running: time.sleep(cfg.YAW_180_MS)
 
@@ -994,6 +1008,7 @@ def search_loop():
 
             # Clue detection: centered + white center sensor
             if at_intersection_and_white():
+                buzz('clue')
                 clue = (pos[0], pos[1])
                 if clue not in clues:
                     clues.append(clue)
