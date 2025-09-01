@@ -59,5 +59,5 @@ This project coordinates one or more Pololu 3pi+ 2040 robots using an ESP32 as a
 
 ## License
 
-This project is provided as-is without a specific license. Add a license file if you intend to distribute or reuse the code.
+This project is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
 
