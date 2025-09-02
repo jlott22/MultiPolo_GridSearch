@@ -809,8 +809,6 @@ def pick_next_cell():
     """
     choices = []
     weights = []
-    straight_choice = None
-    straight_weight = None
     cx, cy = pos[0], pos[1]
     for dx, dy in ((1,0), (-1,0), (0,1), (0,-1)):
         nx, ny = cx + dx, cy + dy
@@ -832,15 +830,8 @@ def pick_next_cell():
         if weight > 0:
             choices.append((nx, ny))
             weights.append(weight)
-            if (dx, dy) == heading:
-                straight_choice = (nx, ny)
-                straight_weight = weight
     if not choices:
         return None
-
-    max_weight = max(weights)
-    if straight_choice is not None and straight_weight == max_weight:
-        return straight_choice
 
     total = sum(weights)
     r = random.random() * total
