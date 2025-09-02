@@ -759,29 +759,30 @@ def update_prob_map():
             prob_map[i] = base + clue_sum
 
 
-def distance_from_center(x):
-    """Return the horizontal distance from the grid center column.
+def distance_from_center(coord):
+    """Return the distance from the grid center along one axis.
 
     Used to penalize center-ward moves before the first clue is seen, without
     assigning robots to specific sides of the grid.
     """
-    return abs(x - GRID_CENTER)
+    return abs(coord - GRID_CENTER)
 
-def centerward_step_cost(curr_x, next_x):
-    """Small pre-clue cost for stepping toward the grid center.
-
-    Returns 0 unless the first clue has not yet been seen *and* the step
-    moves inward. Only the inward delta is charged at CENTER_STEP.
-    """
+def centerward_step_cost(curr_x, curr_y, next_x, next_y):
+    """Pre-clue only: Penalize steps that move inward toward the center on either axis."""
     if first_clue_seen:
         return 0.0
-    if next_x == curr_x:
-        return 0.0
-    d_curr = distance_from_center(curr_x)
-    d_next = distance_from_center(next_x)
-    if d_next < d_curr:
-        return CENTER_STEP * (d_curr - d_next)
-    return 0.0
+    cost = 0.0
+    if next_x != curr_x:
+        d_curr = distance_from_center(curr_x)
+        d_next = distance_from_center(next_x)
+        if d_next < d_curr:
+            cost += CENTER_STEP * (d_curr - d_next)
+    if next_y != curr_y:
+        d_curr = distance_from_center(curr_y)
+        d_next = distance_from_center(next_y)
+        if d_next < d_curr:
+            cost += CENTER_STEP * (d_curr - d_next)
+    return cost
 
 def is_peer_intent_active(peer_id):
     """True if we have a reservation from the given peer."""
@@ -824,7 +825,7 @@ def pick_next_cell():
             cost += cfg.VISITED_STEP_PENALTY
         if (dx, dy) != heading:
             cost += 1.0
-        cost += centerward_step_cost(cx, nx)
+        cost += centerward_step_cost(cx, cy, nx, ny)
         weight = reward - cost
         if weight > 0:
             choices.append((nx, ny))
