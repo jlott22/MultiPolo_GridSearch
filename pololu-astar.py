@@ -940,9 +940,14 @@ def search_loop():
         calibrate()
         update_prob_map()
 
-        # wait for hub start command
+        # wait for hub start command, periodically sharing start position
+        last_pose_publish = time.ticks_ms()
         while not start_signal:
             uart_service()
+            now = time.ticks_ms()
+            if time.ticks_diff(now, last_pose_publish) >= 3000:
+                publish_position()
+                last_pose_publish = now
             time.sleep_ms(10)
         METRIC_START_TIME_MS = time.ticks_ms()
         

@@ -177,7 +177,8 @@ heading = (START_HEADING[0], START_HEADING[1])
 # Run flags (checked by loops/threads for clean exits)
 running = True                         # master run flag
 found_object = False                   # set True on bump or peer alert
-first_clue_seen = False                # set True after the first clue is found
+# set True after the first clue is found
+first_clue_seen = False
 move_forward_flag = False
 
 # Intent reservations from peers: peer_id -> (x, y)
@@ -187,7 +188,9 @@ peer_pos = {}
 
 # -----------------------------
 # Cost shaping to keep robots spread out
-CENTER_STEP = 0.4        # cost per step toward the center before the first clue (must be > turn penalty ~=1)
+# A light centerward cost discourages early clumping;
+# there is no longer a column-switch penalty.
+CENTER_STEP = 0.1  # small cost per inward step before the first clue
 
 # -----------------------------
 # Motion configuration
@@ -858,9 +861,14 @@ def search_loop():
         calibrate()
         update_prob_map()
 
-        # wait for hub start command
+        # wait for hub start command, periodically sharing start position
+        last_pose_publish = time.ticks_ms()
         while not start_signal:
             uart_service()
+            now = time.ticks_ms()
+            if time.ticks_diff(now, last_pose_publish) >= 3000:
+                publish_position()
+                last_pose_publish = now
             time.sleep_ms(10)
         METRIC_START_TIME_MS = time.ticks_ms()
         
