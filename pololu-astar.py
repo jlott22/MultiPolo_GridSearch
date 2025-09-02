@@ -812,6 +812,15 @@ def pick_goal():
     """
     best = None
     best_val = -1e9
+
+    # Prefer the cell straight ahead when its reward ties with others.
+    fx, fy = pos[0] + heading[0], pos[1] + heading[1]
+    if 0 <= fx < GRID_SIZE and 0 <= fy < GRID_SIZE:
+        i = idx(fx, fy)
+        if grid[i] == 0:
+            best = (fx, fy)
+            best_val = prob_map[i] * REWARD_FACTOR
+
     for y in range(GRID_SIZE):
         for x in range(GRID_SIZE):
             i = idx(x, y)
