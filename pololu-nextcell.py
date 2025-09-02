@@ -19,9 +19,10 @@
 # - Transport: UART only. The ESP32 reads these lines and publishes to MQTT.
 # - Topics/strings: match your integrated format (status/visited/clue/alert).
 # - Behavior:
-#   * Before any clue: do an outside→in "lawn-mower" sweep on each half,
-#     encouraged by a higher center-ward cost than the turn cost.
-#   * After first clue: switch to reward-chasing (argmax derived from prob_map).
+#   * Movement is picked probabilistically from neighboring cells.
+#     Rewards come from a Manhattan-decay map around clues and naturally pull robots
+#     toward high-valued regions without long-range planning.
+#   * A center-ward cost discourages clumping so robots stay in their home regions.
 #   * Intent reservation: publish your next cell; avoid the other's reserved or occupied cell.
 #   * Object is bump-only: on bump, publish alert and stop both robots immediately.
 #   * Clues are intersections where center line sensor is white (and robot is centered).
@@ -38,9 +39,9 @@
 
 import time
 import _thread
-import heapq
 import sys
 import gc
+import random
 from array import array
 from machine import UART, Pin
 from pololu_3pi_2040_robot import robot
@@ -164,15 +165,6 @@ prob_map = array('f', [1 / (GRID_SIZE * GRID_SIZE)] * (GRID_SIZE * GRID_SIZE))
 REWARD_FACTOR = 5
 clues = []                            # list of (x, y) clue cells
 
-# Preallocated structures for A* planning
-# --------------------------------------
-# Arrays hold parent index and path cost for each cell.  They are cleared and
-# reused on every planning iteration to avoid per-call allocations which are
-# expensive on MicroPython.
-came_from = array('i', [-1] * (GRID_SIZE * GRID_SIZE))
-cost_so_far = array('f', [0.0] * (GRID_SIZE * GRID_SIZE))
-frontier = []
-
 
 def idx(x, y):
     """Convert Cartesian (x, y) to linear index in map arrays."""
@@ -185,7 +177,7 @@ heading = (START_HEADING[0], START_HEADING[1])
 # Run flags (checked by loops/threads for clean exits)
 running = True                         # master run flag
 found_object = False                   # set True on bump or peer alert
-first_clue_seen = False                # once True, we disable lawn-mower bias
+first_clue_seen = False                # set True after the first clue is found
 move_forward_flag = False
 
 # Intent reservations from peers: peer_id -> (x, y)
@@ -194,9 +186,9 @@ peer_intent = {}
 peer_pos = {}
 
 # -----------------------------
-# Cost shaping (pre-clue lawn-mower / serpentine)
+# Cost shaping to keep robots spread out
 CENTER_STEP = 0.4        # cost per step toward the center when switching columns (must be > turn penalty ~=1)
-SWITCH_COL_BASE = 0.3    # small base penalty for switching columns (pre-clue)
+SWITCH_COL_BASE = 0.3    # small base penalty for switching columns
 
 # -----------------------------
 # Motion configuration
@@ -772,13 +764,11 @@ def distance_from_center(x):
 
 def centerward_step_cost(curr_x, next_x):
     """
-    Pre-clue only: Penalize stepping toward the center *more than* turning.
+    Penalize stepping toward the grid center to keep robots spread out.
     - Staying in the same column costs 0 (encourages N–S sweeping).
     - Switching columns pays a base penalty.
-    - If the switch moves 'inward' (toward center), add CENTER_STEP * delta.
+    - If the switch moves inward, add CENTER_STEP * delta.
     """
-    if first_clue_seen:
-        return 0.0
     if next_x == curr_x:
         return 0.0
     d_curr = distance_from_center(curr_x)
@@ -802,129 +792,49 @@ def i_should_yield(ix, iy):
         if (px, py) == (ix, iy):
             return True
     return False
-
-def pick_goal():
-    """
-    Choose a goal cell:
-      - Post-clue: pure argmax(reward) among unknown cells, where
-        reward = prob_map * REWARD_FACTOR.
-      - Pre-clue: argmax(reward) but statically biased against center
-                  via center distance (keeps goals in outer strips first).
-    Fallback: nearest unknown if all rewards are flat.
-    """
-    best = None
-    best_val = -1e9
-    for y in range(GRID_SIZE):
-        for x in range(GRID_SIZE):
-            i = idx(x, y)
-            if grid[i] != 0:
-                continue
-            val = prob_map[i] * REWARD_FACTOR
-
-            if not first_clue_seen:
-                # Static nudge to keep targets in outer strips pre-clue
-                # (dynamic step cost in A* does the heavy lifting)
-                val -= 0.3 * (GRID_CENTER - distance_from_center(x))
-            if val > best_val:
-                best_val = val
-                best = (x, y)
-
-    if best is None:
-        # Fallback: nearest unknown
-        unknowns = [(x, y) for y in range(GRID_SIZE) for x in range(GRID_SIZE) if grid[idx(x, y)] == 0]
-        if unknowns:
-            best = min(unknowns, key=lambda c: abs(c[0] - pos[0]) + abs(c[1] - pos[1]))
-    return best
 flash_LEDS(GREEN,1)
 # ===========================================================
-# A* Planner (4-neighbor grid, cardinal)
+# Probabilistic local move selector
 # ===========================================================
-def a_star(start, goal):
+def pick_next_cell():
     """
-    A* over the 4-neighbor grid, with costs:
-      +1 per step
-      +1 turn penalty if direction changes
-      + centerward_step_cost (pre-clue serpentine)
-      + cfg.VISITED_STEP_PENALTY if stepping onto a visited cell (grid==2)
-      + INTENT_PENALTY if stepping into the other's reserved next cell or current position
-    The reward from prob_map is applied as a bonus in the node priority.
-    Returns a path as a list: [start, ..., goal], or [] if failure.
+    Choose the next neighboring cell using a weighted random selection based
+    on local reward and cost.
+    Returns (x, y) or None if no move is available.
     """
-    frontier.clear()
-    for i in range(GRID_SIZE * GRID_SIZE):
-        came_from[i] = -1
-        cost_so_far[i] = 1e30
-
-    start_idx = idx(start[0], start[1])
-    goal_idx = idx(goal[0], goal[1])
-    heapq.heappush(frontier, (0, start_idx, heading))
-    came_from[start_idx] = start_idx
-    cost_so_far[start_idx] = 0.0
-
-    while frontier and running and not found_object:
-        _, current_idx, cur_dir = heapq.heappop(frontier)
-        if current_idx == goal_idx:
-            break
-
-        cx = current_idx % GRID_SIZE
-        cy = GRID_SIZE - 1 - (current_idx // GRID_SIZE)
-        for dx, dy in ((1,0),(-1,0),(0,1),(0,-1)):
-            nx, ny = cx + dx, cy + dy
-            if not (0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE):
-                continue
-            i = idx(nx, ny)
-            if grid[i] == 1:  # 1 = obstacle/reserved
-                continue
-
-            new_cost = cost_so_far[current_idx] + 1
-
-            # Turning penalty
-            if (dx, dy) != cur_dir:
-                new_cost += 1
-
-            # 🔹 Penalty for retracing visited cell
-            if grid[i] == 2:   # 2 = visited
-                new_cost += cfg.VISITED_STEP_PENALTY
-
-            # Pre-clue: penalize inward hops (serpentine)
-            new_cost += centerward_step_cost(cx, nx)
-
-            # Reservation: avoid peers' intended next cells and current positions
-            for pid, (ix, iy) in peer_intent.items():
-                if (ix, iy) == (nx, ny):
-                    new_cost += INTENT_PENALTY
-                    break
-            else:
-                for pid, (px, py) in peer_pos.items():
-                    if (px, py) == (nx, ny):
-                        new_cost += INTENT_PENALTY
-                        break
-
-            if new_cost < cost_so_far[i]:
-                cost_so_far[i] = new_cost
-                priority = (
-                    new_cost
-                    + abs(goal[0] - nx)
-                    + abs(goal[1] - ny)
-                    - prob_map[i] * REWARD_FACTOR
-                )
-                heapq.heappush(frontier, (priority, i, (dx, dy)))
-                came_from[i] = current_idx
-
-    if came_from[goal_idx] == -1:
-        return []
-
-    # Reconstruct path
-    path = []
-    cur_idx = goal_idx
-    while cur_idx != start_idx:
-        x = cur_idx % GRID_SIZE
-        y = GRID_SIZE - 1 - (cur_idx // GRID_SIZE)
-        path.append((x, y))
-        cur_idx = came_from[cur_idx]
-    path.reverse()
-    return [start] + path
-
+    choices = []
+    weights = []
+    cx, cy = pos[0], pos[1]
+    for dx, dy in ((1,0), (-1,0), (0,1), (0,-1)):
+        nx, ny = cx + dx, cy + dy
+        if not (0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE):
+            continue
+        i = idx(nx, ny)
+        if grid[i] == 1:  # obstacle/reserved
+            continue
+        if i_should_yield(nx, ny):
+            continue
+        reward = prob_map[i] * REWARD_FACTOR
+        cost = 0.0
+        if grid[i] == 2:
+            cost += cfg.VISITED_STEP_PENALTY
+        if (dx, dy) != heading:
+            cost += 1.0
+        cost += centerward_step_cost(cx, nx)
+        weight = reward - cost
+        if weight > 0:
+            choices.append((nx, ny))
+            weights.append(weight)
+    if not choices:
+        return None
+    total = sum(weights)
+    r = random.random() * total
+    acc = 0.0
+    for cell, w in zip(choices, weights):
+        acc += w
+        if r <= acc:
+            return cell
+    return choices[-1]
 
 flash_LEDS(GREEN,1)
 # ===========================================================
@@ -934,11 +844,10 @@ def search_loop():
     """
     High-level mission loop:
       1) Update probability map
-      2) Pick a goal (pre-clue sweep bias or post-clue reward chase)
-      3) Plan with A* (costs include turn, center-ward, intent/position, reward)
-      4) Publish intent → turn → advance one cell (with bump abort)
-      5) Mark visited, publish status, detect clue (intersection/white)
-      6) Repeat until object found or no goals remain
+      2) Probabilistically pick a neighboring cell based on local reward/cost
+      3) Publish intent → turn → advance one cell (with bump abort)
+      4) Mark visited, publish status, detect clue (intersection/white)
+      5) Repeat until object found or no moves remain
     Always cuts motors in a finally block.
     """
     global first_clue_seen, move_forward_flag, start_signal, METRIC_START_TIME_MS
@@ -960,17 +869,11 @@ def search_loop():
             # MicroPython allocation failures during long searches
             gc.collect()
 
-            goal = pick_goal()
-            if goal is None:
-                break
+            update_prob_map()
 
-            path = a_star(tuple(pos), goal)
-            # Maintain low memory usage between planning iterations
-            gc.collect()
-            if len(path) < 2:
+            nxt = pick_next_cell()
+            if nxt is None:
                 break
-
-            nxt = path[1]
 
             # Reserve the next cell so the other robot yields if it wanted the same
             publish_intent(nxt[0], nxt[1])
@@ -998,7 +901,9 @@ def search_loop():
             # Arrived → update state & publish
             record_intersection(pos[0], pos[1])
             pos[0], pos[1] = nxt[0], nxt[1]
-            grid[idx(pos[0], pos[1])] = 2
+            cell_index = idx(pos[0], pos[1])
+            grid[cell_index] = 2
+            prob_map[cell_index] = 0.0
             publish_position()
             publish_visited(pos[0], pos[1])
 
