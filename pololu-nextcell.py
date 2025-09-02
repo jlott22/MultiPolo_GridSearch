@@ -649,6 +649,9 @@ def calibrate():
     pos[0], pos[1] = START_POS
     if 0 <= pos[0] < GRID_SIZE and 0 <= pos[1] < GRID_SIZE:
         grid[idx(pos[0], pos[1])] = 2
+    update_prob_map()
+    publish_position()
+    publish_visited(pos[0], pos[1])
 
     motors_off()
     METRIC_START_TIME_MS = time.ticks_ms()
@@ -855,8 +858,6 @@ def search_loop():
     try:
         calibrate()
         update_prob_map()
-        publish_position()
-        publish_visited(pos[0], pos[1])
 
         # wait for hub start command
         while not start_signal:
