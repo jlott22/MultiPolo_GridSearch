@@ -427,7 +427,7 @@ def handle_msg(line):
     Ignores:
       - other status fields we don't currently need
     """
-    global peer_intent, peer_pos, first_clue_seen, object_location, start_signal
+    global peer_intent, peer_pos, first_clue_seen, object_location, start_signal, intersection_visits
 
     # Minimal parsing: "<sender>/<topic>:<payload>"
     try:
@@ -449,6 +449,8 @@ def handle_msg(line):
             if grid[i] == 0:
                 grid[i] = 2
             prob_map[i] = 0.0
+            if (x, y) not in intersection_visits:
+                intersection_visits[(x, y)] = 1
             debug_log('visited updated:', i)
 
     elif topic == "3":   #clue
