@@ -943,7 +943,7 @@ def search_loop():
       6) Repeat until object found or no goals remain
     Always cuts motors in a finally block.
     """
-    global first_clue_seen, move_forward_flag, start_signal, METRIC_START_TIME_MS
+    global first_clue_seen, move_forward_flag, start_signal, METRIC_START_TIME_MS, pos
 
     try:
         calibrate()
@@ -956,6 +956,7 @@ def search_loop():
             now = time.ticks_ms()
             if time.ticks_diff(now, last_pose_publish) >= 3000:
                 publish_position()
+                publish_visited(pos[0],pos[1])
                 last_pose_publish = now
             time.sleep_ms(10)
         METRIC_START_TIME_MS = time.ticks_ms()
