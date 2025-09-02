@@ -447,7 +447,8 @@ def handle_msg(line):
             i = idx(x, y)
             if grid[i] == 0:
                 grid[i] = 2
-                debug_log('visited updated:', i)
+            prob_map[i] = 0.0
+            debug_log('visited updated:', i)
 
     elif topic == "3":   #clue
         try:
