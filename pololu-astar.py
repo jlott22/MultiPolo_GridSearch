@@ -676,7 +676,7 @@ def at_intersection_and_white():
     """
     r = line_sensors.read_calibrated()      # [0]..[4], center is [2]
     if r[2] < cfg.MIDDLE_WHITE_THRESH:
-        buzz('intersection')
+        buzz('clue')
         return True
     else:
         return False
@@ -707,10 +707,12 @@ def rotate_degrees(deg):
         if running: time.sleep(cfg.YAW_180_MS)
 
     elif deg == 90:
+        buzz('turn')
         motors.set_speeds(cfg.TURN_SPEED, -cfg.TURN_SPEED)
         if running: time.sleep(cfg.YAW_90_MS)
 
     elif deg == -90:
+        buzz('turn')
         motors.set_speeds(-cfg.TURN_SPEED, cfg.TURN_SPEED)
         if running: time.sleep(cfg.YAW_90_MS)
 
