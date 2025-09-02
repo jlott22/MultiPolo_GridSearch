@@ -832,6 +832,7 @@ def pick_next_cell():
             weights.append(weight)
     if not choices:
         return None
+
     total = sum(weights)
     r = random.random() * total
     acc = 0.0
