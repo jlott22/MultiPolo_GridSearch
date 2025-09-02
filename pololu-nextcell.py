@@ -177,7 +177,8 @@ heading = (START_HEADING[0], START_HEADING[1])
 # Run flags (checked by loops/threads for clean exits)
 running = True                         # master run flag
 found_object = False                   # set True on bump or peer alert
-first_clue_seen = False                # set True after the first clue is found
+# set True after the first clue is found
+first_clue_seen = False
 move_forward_flag = False
 
 # Intent reservations from peers: peer_id -> (x, y)
@@ -187,8 +188,9 @@ peer_pos = {}
 
 # -----------------------------
 # Cost shaping to keep robots spread out
-CENTER_STEP = 0.4        # cost per step toward the center when switching columns (must be > turn penalty ~=1)
-SWITCH_COL_BASE = 0.3    # small base penalty for switching columns
+# A light centerward cost discourages early clumping;
+# there is no longer a column-switch penalty.
+CENTER_STEP = 0.1  # small cost per inward step before the first clue
 
 # -----------------------------
 # Motion configuration
@@ -766,21 +768,20 @@ def distance_from_center(x):
     return abs(x - GRID_CENTER)
 
 def centerward_step_cost(curr_x, next_x):
+    """Small pre-clue cost for stepping toward the grid center.
+
+    Returns 0 unless the first clue has not yet been seen *and* the step
+    moves inward. Only the inward delta is charged at CENTER_STEP.
     """
-    Penalize stepping toward the grid center to keep robots spread out.
-    - Staying in the same column costs 0 (encourages N–S sweeping).
-    - Switching columns pays a base penalty.
-    - If the switch moves inward, add CENTER_STEP * delta.
-    """
+    if first_clue_seen:
+        return 0.0
     if next_x == curr_x:
         return 0.0
     d_curr = distance_from_center(curr_x)
     d_next = distance_from_center(next_x)
-    toward_center = (d_next < d_curr)
-    cost = SWITCH_COL_BASE
-    if toward_center:
-        cost += CENTER_STEP * (d_curr - d_next)
-    return cost
+    if d_next < d_curr:
+        return CENTER_STEP * (d_curr - d_next)
+    return 0.0
 
 def is_peer_intent_active(peer_id):
     """True if we have a reservation from the given peer."""
