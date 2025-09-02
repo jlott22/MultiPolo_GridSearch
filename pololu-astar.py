@@ -195,8 +195,7 @@ peer_pos = {}
 
 # -----------------------------
 # Cost shaping (pre-clue lawn-mower / serpentine)
-CENTER_STEP = 0.4        # cost per step toward the center when switching columns (must be > turn penalty ~=1)
-SWITCH_COL_BASE = 0.3    # small base penalty for switching columns (pre-clue)
+CENTER_STEP = 0.4        # cost per step toward the center before the first clue (must be > turn penalty ~=1)
 
 # -----------------------------
 # Motion configuration
@@ -765,31 +764,29 @@ def update_prob_map():
             prob_map[i] = base + clue_sum
 
 
-def distance_from_center(x):
-    """Return the horizontal distance from the grid center column.
+def distance_from_center(coord):
+    """Return the distance from the grid center along one axis.
 
     Used to penalize center-ward moves before the first clue is seen, without
     assigning robots to specific sides of the grid.
     """
-    return abs(x - GRID_CENTER)
+    return abs(coord - GRID_CENTER)
 
-def centerward_step_cost(curr_x, next_x):
-    """
-    Pre-clue only: Penalize stepping toward the center *more than* turning.
-    - Staying in the same column costs 0 (encourages N–S sweeping).
-    - Switching columns pays a base penalty.
-    - If the switch moves 'inward' (toward center), add CENTER_STEP * delta.
-    """
+def centerward_step_cost(curr_x, curr_y, next_x, next_y):
+    """Pre-clue only: Penalize steps that move inward toward the center on either axis."""
     if first_clue_seen:
         return 0.0
-    if next_x == curr_x:
-        return 0.0
-    d_curr = distance_from_center(curr_x)
-    d_next = distance_from_center(next_x)
-    toward_center = (d_next < d_curr)
-    cost = SWITCH_COL_BASE
-    if toward_center:
-        cost += CENTER_STEP * (d_curr - d_next)
+    cost = 0.0
+    if next_x != curr_x:
+        d_curr = distance_from_center(curr_x)
+        d_next = distance_from_center(next_x)
+        if d_next < d_curr:
+            cost += CENTER_STEP * (d_curr - d_next)
+    if next_y != curr_y:
+        d_curr = distance_from_center(curr_y)
+        d_next = distance_from_center(next_y)
+        if d_next < d_curr:
+            cost += CENTER_STEP * (d_curr - d_next)
     return cost
 
 def is_peer_intent_active(peer_id):
@@ -808,11 +805,9 @@ def i_should_yield(ix, iy):
 
 def pick_goal():
     """
-    Choose a goal cell:
-      - Post-clue: pure argmax(reward) among unknown cells, where
-        reward = prob_map * REWARD_FACTOR.
-      - Pre-clue: argmax(reward) but statically biased against center
-                  via center distance (keeps goals in outer strips first).
+    Choose a goal cell as the argmax(reward) among unknown cells, where
+    reward = prob_map * REWARD_FACTOR.  The dynamic step cost in A* handles
+    any pre-clue bias; no static center bias is applied here.
     Fallback: nearest unknown if all rewards are flat.
     """
     best = None
@@ -823,11 +818,6 @@ def pick_goal():
             if grid[i] != 0:
                 continue
             val = prob_map[i] * REWARD_FACTOR
-
-            if not first_clue_seen:
-                # Static nudge to keep targets in outer strips pre-clue
-                # (dynamic step cost in A* does the heavy lifting)
-                val -= 0.3 * (GRID_CENTER - distance_from_center(x))
             if val > best_val:
                 best_val = val
                 best = (x, y)
@@ -890,7 +880,7 @@ def a_star(start, goal):
                 new_cost += cfg.VISITED_STEP_PENALTY
 
             # Pre-clue: penalize inward hops (serpentine)
-            new_cost += centerward_step_cost(cx, nx)
+            new_cost += centerward_step_cost(cx, cy, nx, ny)
 
             # Reservation: avoid peers' intended next cells and current positions
             for pid, (ix, iy) in peer_intent.items():

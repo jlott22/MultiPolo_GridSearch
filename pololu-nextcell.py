@@ -187,8 +187,7 @@ peer_pos = {}
 
 # -----------------------------
 # Cost shaping to keep robots spread out
-CENTER_STEP = 0.4        # cost per step toward the center when switching columns (must be > turn penalty ~=1)
-SWITCH_COL_BASE = 0.3    # small base penalty for switching columns
+CENTER_STEP = 0.4        # cost per step toward the center before the first clue (must be > turn penalty ~=1)
 
 # -----------------------------
 # Motion configuration
@@ -757,29 +756,29 @@ def update_prob_map():
             prob_map[i] = base + clue_sum
 
 
-def distance_from_center(x):
-    """Return the horizontal distance from the grid center column.
+def distance_from_center(coord):
+    """Return the distance from the grid center along one axis.
 
     Used to penalize center-ward moves before the first clue is seen, without
     assigning robots to specific sides of the grid.
     """
-    return abs(x - GRID_CENTER)
+    return abs(coord - GRID_CENTER)
 
-def centerward_step_cost(curr_x, next_x):
-    """
-    Penalize stepping toward the grid center to keep robots spread out.
-    - Staying in the same column costs 0 (encourages N–S sweeping).
-    - Switching columns pays a base penalty.
-    - If the switch moves inward, add CENTER_STEP * delta.
-    """
-    if next_x == curr_x:
+def centerward_step_cost(curr_x, curr_y, next_x, next_y):
+    """Pre-clue only: Penalize steps that move inward toward the center on either axis."""
+    if first_clue_seen:
         return 0.0
-    d_curr = distance_from_center(curr_x)
-    d_next = distance_from_center(next_x)
-    toward_center = (d_next < d_curr)
-    cost = SWITCH_COL_BASE
-    if toward_center:
-        cost += CENTER_STEP * (d_curr - d_next)
+    cost = 0.0
+    if next_x != curr_x:
+        d_curr = distance_from_center(curr_x)
+        d_next = distance_from_center(next_x)
+        if d_next < d_curr:
+            cost += CENTER_STEP * (d_curr - d_next)
+    if next_y != curr_y:
+        d_curr = distance_from_center(curr_y)
+        d_next = distance_from_center(next_y)
+        if d_next < d_curr:
+            cost += CENTER_STEP * (d_curr - d_next)
     return cost
 
 def is_peer_intent_active(peer_id):
@@ -823,7 +822,7 @@ def pick_next_cell():
             cost += cfg.VISITED_STEP_PENALTY
         if (dx, dy) != heading:
             cost += 1.0
-        cost += centerward_step_cost(cx, nx)
+        cost += centerward_step_cost(cx, cy, nx, ny)
         weight = reward - cost
         if weight > 0:
             choices.append((nx, ny))
