@@ -446,8 +446,7 @@ def handle_msg(line):
             return
         if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
             i = idx(x, y)
-            if grid[i] == 0:
-                grid[i] = 2
+            grid[i] = 2
             prob_map[i] = 0.0
             if (x, y) not in intersection_visits:
                 intersection_visits[(x, y)] = 1
