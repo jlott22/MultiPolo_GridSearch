@@ -58,6 +58,7 @@ make computer interfact that logs at the end
 # -----------------------------
 ROBOT_ID = "00"  # set to "00", "01", "02", or "03" at deployment
 GRID_SIZE = 5
+GRID_CENTER = (GRID_SIZE - 1) / 2
 
 DEBUG = False
 DEBUG_LOG_FILE = "debug-log.txt"
@@ -193,12 +194,6 @@ peer_intent = {}
 peer_pos = {}
 
 # -----------------------------
-# Soft split (pre-clue only)
-# 00 prefers left edge; 01 prefers right edge
-# We implement serpentine as "center-ward hop cost" > turning cost
-# -----------------------------
-PREFERS_LEFT = (ROBOT_ID == "00")  # which outer edge is "yours"
-
 # Cost shaping (pre-clue lawn-mower / serpentine)
 CENTER_STEP = 0.4        # cost per step toward the center when switching columns (must be > turn penalty ~=1)
 SWITCH_COL_BASE = 0.3    # small base penalty for switching columns (pre-clue)
@@ -767,14 +762,13 @@ def update_prob_map():
             prob_map[i] = base + clue_sum
 
 
-def edge_distance_from_side(x):
+def distance_from_center(x):
+    """Return the horizontal distance from the grid center column.
+
+    Used to penalize center-ward moves before the first clue is seen, without
+    assigning robots to specific sides of the grid.
     """
-    Distance from "your" outer edge:
-      - Robot 00: from left edge (x=0)
-      - Robot 01: from right edge (x=GRID_SIZE-1)
-    Used to define what 'toward center' means.
-    """
-    return x if PREFERS_LEFT else (GRID_SIZE - 1 - x)
+    return abs(x - GRID_CENTER)
 
 def centerward_step_cost(curr_x, next_x):
     """
@@ -787,8 +781,8 @@ def centerward_step_cost(curr_x, next_x):
         return 0.0
     if next_x == curr_x:
         return 0.0
-    d_curr = edge_distance_from_side(curr_x)
-    d_next = edge_distance_from_side(next_x)
+    d_curr = distance_from_center(curr_x)
+    d_next = distance_from_center(next_x)
     toward_center = (d_next < d_curr)
     cost = SWITCH_COL_BASE
     if toward_center:
@@ -815,7 +809,7 @@ def pick_goal():
       - Post-clue: pure argmax(reward) among unknown cells, where
         reward = prob_map * REWARD_FACTOR.
       - Pre-clue: argmax(reward) but statically biased against center
-                  via edge-distance (keeps goals in outer strips first).
+                  via center distance (keeps goals in outer strips first).
     Fallback: nearest unknown if all rewards are flat.
     """
     best = None
@@ -830,7 +824,7 @@ def pick_goal():
             if not first_clue_seen:
                 # Static nudge to keep targets in outer strips pre-clue
                 # (dynamic step cost in A* does the heavy lifting)
-                val -= 0.3 * edge_distance_from_side(x)
+                val -= 0.3 * (GRID_CENTER - distance_from_center(x))
             if val > best_val:
                 best_val = val
                 best = (x, y)
