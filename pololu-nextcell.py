@@ -211,6 +211,7 @@ class MotionConfig:
         self.TURN_SPEED = 1000
         self.YAW_90_MS = 0.3
         self.YAW_180_MS = 0.6
+        self.TURN_PENALTY = 0.1      # small cost for turning vs. straight
 
 cfg = MotionConfig()
 
@@ -824,7 +825,7 @@ def pick_next_cell():
         if grid[i] == 2:
             cost += cfg.VISITED_STEP_PENALTY
         if (dx, dy) != heading:
-            cost += 1.0
+            cost += cfg.TURN_PENALTY
         cost += centerward_step_cost(cx, cy, nx, ny)
         weight = reward - cost
         if weight > 0:
