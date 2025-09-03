@@ -562,8 +562,7 @@ def move_forward_one_cell():
       True  -> reached an intersection (no bump)
       False -> stopped due to bump or external stop condition
     """
-    global _intersection_hits, move_forward_flag
-    _intersection_hits = 0
+    global move_forward_flag
     first_loop = False
     lock_release_time = time.ticks_ms() #flag to reset start lock time
     #outter infinite loop to keep thread check for activation
