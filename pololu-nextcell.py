@@ -59,7 +59,7 @@ make computer interfact that logs at the end
 # -----------------------------
 ROBOT_ID = "00"  # set to "00", "01", "02", or "03" at deployment
 GRID_SIZE = 5
-GRID_CENTER = (GRID_SIZE - 1) / 2
+GRID_CENTER = (GRID_SIZE - 1) // 2
 
 DEBUG = False
 DEBUG_LOG_FILE = "debug-log.txt"
@@ -162,7 +162,8 @@ uart = UART(0, baudrate=115200, tx=28, rx=29)
 # -----------------------------
 grid = bytearray(GRID_SIZE * GRID_SIZE)  # 0=unknown, 1=obstacle (reserved), 2=visited
 prob_map = array('f', [1 / (GRID_SIZE * GRID_SIZE)] * (GRID_SIZE * GRID_SIZE))
-REWARD_FACTOR = 5
+# Base reward multiplier so unexplored moves outweigh small costs
+REWARD_FACTOR = 75
 clues = []                            # list of (x, y) clue cells
 
 
@@ -190,7 +191,7 @@ peer_pos = {}
 # Cost shaping to keep robots spread out
 # A light centerward cost discourages early clumping;
 # there is no longer a column-switch penalty.
-CENTER_STEP = 0.1  # small cost per inward step before the first clue
+CENTER_STEP = 1  # small cost per inward step before the first clue
 
 # -----------------------------
 # Motion configuration
@@ -198,7 +199,7 @@ CENTER_STEP = 0.1  # small cost per inward step before the first clue
 class MotionConfig:
     def __init__(self):
         self.MIDDLE_WHITE_THRESH = 200  # center sensor threshold for "white" (tune by calibration) 
-        self.VISITED_STEP_PENALTY = 1.2
+        self.VISITED_STEP_PENALTY = 15
         self.KP = 0.5                # proportional gain around LINE_CENTER
         self.CALIBRATE_SPEED = 1130  # speed to rotate when calibrating
         self.BASE_SPEED = 800        # nominal wheel speed
@@ -211,12 +212,12 @@ class MotionConfig:
         self.TURN_SPEED = 1000
         self.YAW_90_MS = 0.3
         self.YAW_180_MS = 0.6
-        self.TURN_PENALTY = 0.1      # small cost for turning vs. straight
+        self.TURN_PENALTY = 1        # small cost for turning vs. straight
 
 cfg = MotionConfig()
 
 # Intent settings
-INTENT_PENALTY = 8.0     # strong penalty to avoid stepping into the other's reserved or occupied cell
+INTENT_PENALTY = 8       # strong penalty to avoid stepping into the other's reserved or occupied cell
 
 #UART handling globals
 # ---------- ring buffer ----------
@@ -773,8 +774,8 @@ def distance_from_center(coord):
 def centerward_step_cost(curr_x, curr_y, next_x, next_y):
     """Pre-clue only: Penalize steps that move inward toward the center on either axis."""
     if first_clue_seen:
-        return 0.0
-    cost = 0.0
+        return 0
+    cost = 0
     if next_x != curr_x:
         d_curr = distance_from_center(curr_x)
         d_next = distance_from_center(next_x)
@@ -822,8 +823,8 @@ def pick_next_cell():
             continue
         if i_should_yield(nx, ny):
             continue
-        reward = prob_map[i] * REWARD_FACTOR
-        cost = 0.0
+        reward = int(prob_map[i] * REWARD_FACTOR)
+        cost = 0
         if grid[i] == 2:
             cost += cfg.VISITED_STEP_PENALTY
         if (dx, dy) != heading:
@@ -837,11 +838,11 @@ def pick_next_cell():
         return None
 
     total = sum(weights)
-    r = random.random() * total
-    acc = 0.0
+    r = random.randrange(total)
+    acc = 0
     for cell, w in zip(choices, weights):
         acc += w
-        if r <= acc:
+        if r < acc:
             return cell
     return choices[-1]
 
