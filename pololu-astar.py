@@ -615,7 +615,8 @@ def move_forward_one_cell():
             right = _clamp(cfg.BASE_SPEED - correction, cfg.MIN_SPD, cfg.MAX_SPD)
             motors.set_speeds(left, right)
 
-        time.sleep_ms(300)
+        # Shorter sleep to allow rapid response when move_forward_flag is set
+        time.sleep_ms(20)
 
 def calibrate():
     """Calibrate line sensors then advance to the first intersection.
