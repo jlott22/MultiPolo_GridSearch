@@ -18,35 +18,35 @@
 #include "ESP32MQTTClient.h"
 #include <vector>
 
-// Wi-Fi credentials
+// Wi-Fi network credentials
 const char *ssid = "USDresearch";
 const char *pass = "USDresearch";
 
-// MQTT broker details
-const char *server = "mqtt://192.168.1.10:1883"; // MQTT server IP
+// MQTT broker configuration
+const char *server = "mqtt://192.168.1.10:1883"; // MQTT server URI
 
-// Robot-specific identifiers
-String clientID = "01";
-String pubvisitedtopic = clientID + "2"; //VISITED
-String pubpositiontopic = clientID + "1";  //STATUS FOR CURRENT POSITIONING
-String pubalerttopic = clientID + "4";  //ALERT FOR OBJECTS FOUND
-String pubcluetopic = clientID + "3";  //TOPIC FOR CLUES/FOOTPRINTS/JEWELS FOUND
-String pubintenttopic = clientID + "5";  //STATUS FOR CURRENT INTENT
-const char *hubCommandTopic = "hub/command"; // shared hub command topic
-const char *pubresulttopic = "search/results"; // shared search result topic
+// Robot‑specific MQTT topics
+String clientID = "01";                            // unique robot ID
+String pubvisitedtopic = clientID + "2";           // visited cells
+String pubpositiontopic = clientID + "1";          // current position
+String pubalerttopic = clientID + "4";             // object alerts
+String pubcluetopic = clientID + "3";              // clue reports
+String pubintenttopic = clientID + "5";            // next intended cell
+const char *hubCommandTopic = "hub/command";       // shared hub command topic
+const char *pubresulttopic = "search/results";     // shared search result topic
 std::vector<String> otherIDs = {"00", "02", "03"};
-const char *lastWillMessage = "disconnected"; // Last Will message
+const char *lastWillMessage = "disconnected";      // Last Will message
 
 ESP32MQTTClient mqttClient; // MQTT client object
 
-// UART Configuration
+// UART configuration
 #define RXD2 16  // UART RX pin
 #define TXD2 17  // UART TX pin
-HardwareSerial robotSerial(2); // UART2 for Pololu communication
+HardwareSerial robotSerial(2); // UART2 for communication with the Pololu
 
-// Reconnection tracking
+// Track reconnection attempts to throttle retries
 unsigned long lastReconnectAttempt = 0;
-const unsigned long reconnectInterval = 4000; // 4 seconds
+const unsigned long reconnectInterval = 4000; // check every 4 seconds
 
 void frameToRobot(char topicDigit, const String& senderID, const String& payload);
 
@@ -81,11 +81,11 @@ void onMqttConnect(esp_mqtt_client_handle_t client)
 
 void setup()
 {
-    // Initialize debugging
+    // Initialize serial ports for debugging and robot communication
     Serial.begin(115200);
     robotSerial.begin(115200, SERIAL_8N1, RXD2, TXD2);
 
-    // Connect to Wi-Fi
+    // Connect to Wi‑Fi
     Serial.println("Connecting to Wi-Fi...");
     WiFi.begin(ssid, pass);
     while (WiFi.status() != WL_CONNECTED)
@@ -95,11 +95,11 @@ void setup()
     }
     Serial.println("\nConnected to Wi-Fi!");
 
-    // MQTT Client Setup
+    // Configure the MQTT client
     mqttClient.setURI(server);
-    mqttClient.enableDebuggingMessages(); // Enable MQTT debug logs
-    mqttClient.enableLastWillMessage(pubpositiontopic.c_str(), lastWillMessage); // Set Last Will message
-    mqttClient.setKeepAlive(3); // Keep connection alive with a 5-second timeout
+    mqttClient.enableDebuggingMessages();                                  // enable MQTT debug logs
+    mqttClient.enableLastWillMessage(pubpositiontopic.c_str(), lastWillMessage); // set Last Will message
+    mqttClient.setKeepAlive(3);                                            // 5-second keep-alive timeout
 
     // Start the MQTT loop
     mqttClient.loopStart();
@@ -107,7 +107,7 @@ void setup()
 
 void loop()
 {
-    // Ensure Wi-Fi is connected
+    // Ensure Wi‑Fi is connected
     if (WiFi.status() != WL_CONNECTED)
     {
         Serial.println("Wi-Fi disconnected. Attempting reconnection...");
@@ -174,26 +174,26 @@ void loop()
 }
 
 void handlemsg(String line) {
-  int divider = line.indexOf('.'); //indexes where the message divider (.) is in the string
-  if (divider == -1) return;  // dont process ill formed message
+  int divider = line.indexOf('.'); // position of the divider in the string
+  if (divider == -1) return;       // ignore malformed messages
 
   String topic = line.substring(0, divider);
   String message = line.substring(divider + 1);
 
-  // For debug
+  // Debug output
   Serial.print("tout: "); Serial.println(topic);
 
   sendtoMQTT(topic, message);
 }
 
 void frameToRobot (char topicDigit, const String &senderID, const String &payload) {
-  // We keep the '-' end-to-end. If payload already ends with '-', don't add a second one.
+  // Keep a single '-' terminator end-to-end; avoid adding a second one.
   bool hasTerminator = payload.length() && payload.charAt(payload.length()-1) == '-';
 
   robotSerial.print(senderID);       // "00", "01", ...
   robotSerial.print(topicDigit);     // '1'..'6'
   robotSerial.print('.');
-  robotSerial.print(payload);        // very likely already ends with '-'
+  robotSerial.print(payload);        // payload typically already ends with '-'
   if (!hasTerminator) robotSerial.print('-');
 };
 
