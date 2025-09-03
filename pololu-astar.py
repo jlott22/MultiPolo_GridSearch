@@ -791,10 +791,6 @@ def centerward_step_cost(curr_x, curr_y, next_x, next_y):
             cost += CENTER_STEP * (d_curr - d_next)
     return cost
 
-def is_peer_intent_active(peer_id):
-    """True if we have a reservation from the given peer."""
-    return peer_id in peer_intent
-
 def i_should_yield(ix, iy):
     """Yield if a peer reserved or currently occupies (ix, iy)."""
     for pid, (px, py) in peer_intent.items():
