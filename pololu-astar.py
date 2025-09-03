@@ -1004,8 +1004,8 @@ def search_loop():
                 time.sleep_ms(1)
 
             # Arrived → update state & publish
-            record_intersection(pos[0], pos[1])
             pos[0], pos[1] = nxt[0], nxt[1]
+            record_intersection(pos[0], pos[1])
             grid[idx(pos[0], pos[1])] = 2
             publish_position()
             publish_visited(pos[0], pos[1])
