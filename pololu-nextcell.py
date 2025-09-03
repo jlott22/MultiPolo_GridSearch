@@ -13,28 +13,30 @@
 # limitations under the License.
 #
 # ===========================================================
-# Pololu 3pi+ 2040 OLED — Two-Robot Adaptive Search (UART→ESP32→MQTT bridge)
+# Pololu 3pi+ 2040 OLED — Probabilistic Next-Cell Search
 # ===========================================================
-# This script runs on the Pololu 3pi+ 2040 OLED (MicroPython).
-# - Transport: UART only. The ESP32 reads these lines and publishes to MQTT.
-# - Topics/strings: match your integrated format (status/visited/clue/alert).
-# - Behavior:
-#   * Movement is picked probabilistically from neighboring cells.
-#     Rewards come from a Manhattan-decay map around clues and naturally pull robots
-#     toward high-valued regions without long-range planning.
-#   * A center-ward cost discourages clumping so robots stay in their home regions.
-#   * Intent reservation: publish your next cell; avoid the other's reserved or occupied cell.
-#   * Object is bump-only: on bump, publish alert and stop both robots immediately.
-#   * Clues are intersections where center line sensor is white (and robot is centered).
+# Runs on the Pololu 3pi+ 2040 OLED in MicroPython.
+# Communication is through simple UART text frames that an ESP32 forwards to MQTT.
+#
+# Behavior overview:
+#   * At each intersection a neighbor is chosen probabilistically. Rewards
+#     decrease with Manhattan distance from clues so robots drift toward
+#     interesting regions without full path planning.
+#   * A small cost pushes robots to explore their own half of the grid.
+#   * The next intended cell is published; peers avoid reserved or occupied cells.
+#   * The object is detected via bump sensors. On a bump both robots stop and
+#     an alert is published.
+#   * A clue is an intersection where the centered line sensor reports white.
 #
 # Threads:
-#   * One background thread reads UART lines and updates shared state.
-#   * Main thread plans/moves. Both paths guarantee motors are cut on any stop.
+#   * A background UART thread receives lines and updates shared state.
+#   * The main thread selects moves and drives the robot, always cutting power
+#     to the motors on exit.
 #
-# Tuning notes:
-#   * Set UART pins/baud as per Pololu board.
-#   * Calibrate line sensors; adjust cfg.MIDDLE_WHITE_THRESH as needed.
-#   * Adjust turn timings (cfg.YAW_90_MS/cfg.YAW_180_MS) to your platform.
+# Tuning hints:
+#   * Set UART pins and baud to match the board.
+#   * Calibrate line sensors and adjust cfg.MIDDLE_WHITE_THRESH as needed.
+#   * Tune yaw timings (cfg.YAW_90_MS / cfg.YAW_180_MS) for your platform.
 # ===========================================================
 
 import time
@@ -47,13 +49,11 @@ from machine import UART, Pin
 from pololu_3pi_2040_robot import robot
 from pololu_3pi_2040_robot.extras import editions
 from pololu_3pi_2040_robot.buzzer import Buzzer
-'''
-Accurate object reporting, need to update location before reporting.
-bulletproof intent, ran into eachother still
-make grid bigger
-make computer interfact that logs at the end
 
-'''
+# TODO:
+# - Ensure object reports use the updated location before sending.
+# - Improve intent handling to avoid collisions.
+# - Consider enlarging the grid and adding a desktop logging interface.
 # -----------------------------
 # Robot identity & start pose
 # -----------------------------
@@ -162,7 +162,7 @@ uart = UART(0, baudrate=115200, tx=28, rx=29)
 # -----------------------------
 grid = bytearray(GRID_SIZE * GRID_SIZE)  # 0=unknown, 1=obstacle (reserved), 2=visited
 prob_map = array('f', [1 / (GRID_SIZE * GRID_SIZE)] * (GRID_SIZE * GRID_SIZE))
-# Base reward multiplier so unexplored moves outweigh small costs
+# Base reward so unexplored cells are more attractive than small penalties
 REWARD_FACTOR = 75
 clues = []                            # list of (x, y) clue cells
 
@@ -172,26 +172,23 @@ def idx(x, y):
     return (GRID_SIZE - 1 - y) * GRID_SIZE + x
 
 
-pos = [START_POS[0], START_POS[1]]    # current grid pos
+pos = [START_POS[0], START_POS[1]]    # current grid position
 heading = (START_HEADING[0], START_HEADING[1])
 
-# Run flags (checked by loops/threads for clean exits)
-running = True                         # master run flag
+# Flags shared across threads for graceful shutdown
+running = True                         # global run flag
 found_object = False                   # set True on bump or peer alert
-# set True after the first clue is found
-first_clue_seen = False
+first_clue_seen = False                # becomes True after the first clue
 move_forward_flag = False
 
-# Intent reservations from peers: peer_id -> (x, y)
-peer_intent = {}
-# Last reported positions from peers: peer_id -> (x, y)
-peer_pos = {}
+# Intent data from peers
+peer_intent = {}  # peer_id -> (x, y) reservation
+peer_pos = {}     # peer_id -> (x, y) last reported position
 
 # -----------------------------
 # Cost shaping to keep robots spread out
-# A light centerward cost discourages early clumping;
-# there is no longer a column-switch penalty.
-CENTER_STEP = 1  # small cost per inward step before the first clue
+# A small centre-ward cost discourages early clumping.
+CENTER_STEP = 1  # per-step inward cost before the first clue
 
 # -----------------------------
 # Motion configuration
@@ -217,7 +214,7 @@ class MotionConfig:
 cfg = MotionConfig()
 
 # Intent settings
-INTENT_PENALTY = 8       # strong penalty to avoid stepping into the other's reserved or occupied cell
+INTENT_PENALTY = 8       # large cost for stepping into a cell reserved by a peer
 
 #UART handling globals
 # ---------- ring buffer ----------
@@ -848,14 +845,15 @@ flash_LEDS(GREEN,1)
 # Main Search Loop
 # ===========================================================
 def search_loop():
-    """
-    High-level mission loop:
-      1) Update probability map
-      2) Probabilistically pick a neighboring cell based on local reward/cost
-      3) Publish intent → turn → advance one cell (with bump abort)
-      4) Mark visited, publish status, detect clue (intersection/white)
-      5) Repeat until object found or no moves remain
-    Always cuts motors in a finally block.
+    """Main mission loop.
+
+    1. Update the probability map.
+    2. Choose the next neighbor probabilistically using local reward and cost.
+    3. Publish intent, turn, and move one cell (aborting on bump).
+    4. Mark the cell, report status, and check for clues.
+    5. Repeat until the object is found or no moves remain.
+
+    Motors are always stopped in a ``finally`` block.
     """
     global first_clue_seen, move_forward_flag, start_signal, METRIC_START_TIME_MS
 

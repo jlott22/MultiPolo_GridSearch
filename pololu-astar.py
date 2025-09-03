@@ -13,27 +13,31 @@
 # limitations under the License.
 #
 # ===========================================================
-# Pololu 3pi+ 2040 OLED — Two-Robot Adaptive Search (UART→ESP32→MQTT bridge)
+# Pololu 3pi+ 2040 OLED — Coordinated Search (UART → ESP32 → MQTT)
 # ===========================================================
-# This script runs on the Pololu 3pi+ 2040 OLED (MicroPython).
-# - Transport: UART only. The ESP32 reads these lines and publishes to MQTT.
-# - Topics/strings: match your integrated format (status/visited/clue/alert).
-# - Behavior:
-#   * Before any clue: do an outside→in "lawn-mower" sweep on each half,
-#     encouraged by a higher center-ward cost than the turn cost.
-#   * After first clue: switch to reward-chasing (argmax derived from prob_map).
-#   * Intent reservation: publish your next cell; avoid the other's reserved or occupied cell.
-#   * Object is bump-only: on bump, publish alert and stop both robots immediately.
-#   * Clues are intersections where center line sensor is white (and robot is centered).
+# Runs on the Pololu 3pi+ 2040 OLED using MicroPython.
+# Communication uses simple text frames over UART; an attached ESP32 relays
+# those frames to MQTT topics.
+#
+# Behavior overview:
+#   * Before any clue is found the robot sweeps its half of the grid in a
+#     lawn‑mower pattern, nudged outward by a small centre‑ward cost.
+#   * After a clue appears, A* planning pursues cells with the highest
+#     probability scores.
+#   * The next intended cell is published so peers can yield and avoid
+#     collisions.
+#   * Bump sensors detect the object; on a bump both robots halt and report.
+#   * A clue is any intersection where the centered line sensor reads white.
 #
 # Threads:
-#   * One background thread reads UART lines and updates shared state.
-#   * Main thread plans/moves. Both paths guarantee motors are cut on any stop.
+#   * A background UART reader keeps shared state updated.
+#   * The main thread plans paths and moves the robot, always stopping the
+#     motors if the program exits unexpectedly.
 #
-# Tuning notes:
-#   * Set UART pins/baud as per Pololu board.
-#   * Calibrate line sensors; adjust cfg.MIDDLE_WHITE_THRESH as needed.
-#   * Adjust turn timings (cfg.YAW_90_MS/cfg.YAW_180_MS) to your platform.
+# Tuning hints:
+#   * Set UART pins and baud rate to match the hardware.
+#   * Calibrate line sensors and adjust cfg.MIDDLE_WHITE_THRESH accordingly.
+#   * Tune yaw timings (cfg.YAW_90_MS / cfg.YAW_180_MS) for your platform.
 # ===========================================================
 
 import time
@@ -46,13 +50,11 @@ from machine import UART, Pin
 from pololu_3pi_2040_robot import robot
 from pololu_3pi_2040_robot.extras import editions
 from pololu_3pi_2040_robot.buzzer import Buzzer
-'''
-Accurate object reporting, need to update location before reporting.
-bulletproof intent, ran into eachother still
-make grid bigger
-make computer interfact that logs at the end
 
-'''
+# TODO:
+# - Ensure object reporting uses the updated location before broadcasting.
+# - Strengthen intent handling to prevent collisions.
+# - Consider enlarging the grid and adding a desktop logging tool.
 # -----------------------------
 # Robot identity & start pose
 # -----------------------------
@@ -164,11 +166,11 @@ prob_map = array('f', [1 / (GRID_SIZE * GRID_SIZE)] * (GRID_SIZE * GRID_SIZE))
 REWARD_FACTOR = 5
 clues = []                            # list of (x, y) clue cells
 
-# Preallocated structures for A* planning
-# --------------------------------------
-# Arrays hold parent index and path cost for each cell.  They are cleared and
-# reused on every planning iteration to avoid per-call allocations which are
-# expensive on MicroPython.
+# Preallocated arrays for A* planning
+# ----------------------------------
+# Parent indices and path costs for each cell are stored here. Reusing these
+# arrays each planning cycle avoids repeated allocations, which are expensive
+# on MicroPython.
 came_from = array('i', [-1] * (GRID_SIZE * GRID_SIZE))
 cost_so_far = array('f', [0.0] * (GRID_SIZE * GRID_SIZE))
 frontier = []
@@ -179,23 +181,24 @@ def idx(x, y):
     return (GRID_SIZE - 1 - y) * GRID_SIZE + x
 
 
-pos = [START_POS[0], START_POS[1]]    # current grid pos
+pos = [START_POS[0], START_POS[1]]    # current grid position
 heading = (START_HEADING[0], START_HEADING[1])
 
-# Run flags (checked by loops/threads for clean exits)
-running = True                         # master run flag
+# Flags used by threads for clean exits
+running = True                         # global run flag
 found_object = False                   # set True on bump or peer alert
-first_clue_seen = False                # once True, we disable lawn-mower bias
+first_clue_seen = False                # once True, disable lawn‑mower bias
 move_forward_flag = False
 
-# Intent reservations from peers: peer_id -> (x, y)
-peer_intent = {}
-# Last reported positions from peers: peer_id -> (x, y)
-peer_pos = {}
+# Intent data shared by peers
+peer_intent = {}  # peer_id -> (x, y) reservation
+peer_pos = {}     # peer_id -> (x, y) last reported position
 
 # -----------------------------
-# Cost shaping (pre-clue lawn-mower / serpentine)
-CENTER_STEP = 0.4        # cost per step toward the center before the first clue (must be > turn penalty ~=1)
+# Cost shaping for early sweeping pattern
+# A small cost per step toward the center keeps robots sweeping their region
+# before clues are discovered. It must exceed the turn penalty (~1).
+CENTER_STEP = 0.4
 
 # -----------------------------
 # Motion configuration
@@ -932,15 +935,16 @@ flash_LEDS(GREEN,1)
 # Main Search Loop
 # ===========================================================
 def search_loop():
-    """
-    High-level mission loop:
-      1) Update probability map
-      2) Pick a goal (pre-clue sweep bias or post-clue reward chase)
-      3) Plan with A* (costs include turn, center-ward, intent/position, reward)
-      4) Publish intent → turn → advance one cell (with bump abort)
-      5) Mark visited, publish status, detect clue (intersection/white)
-      6) Repeat until object found or no goals remain
-    Always cuts motors in a finally block.
+    """Main mission loop.
+
+    1. Update the probability map.
+    2. Choose a goal: sweep bias before clues, reward chasing after.
+    3. Plan with A* using turn, center, intent, and reward costs.
+    4. Publish intent, turn, and advance one cell (abort on bump).
+    5. Mark the cell, report status, and check for clues.
+    6. Repeat until the object is found or no goals remain.
+
+    Motors are always stopped in a ``finally`` block.
     """
     global first_clue_seen, move_forward_flag, start_signal, METRIC_START_TIME_MS, pos
 
