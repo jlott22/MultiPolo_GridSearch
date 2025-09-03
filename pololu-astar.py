@@ -322,8 +322,7 @@ def stop_all():
       - Ensure motors are off
       - Set a green LED to indicate finished
     """
-    global running, found_object
-    found_object = True
+    global running
     running = False
     motors_off()
     summary = metrics_log()
@@ -339,12 +338,13 @@ def stop_and_alert_object():
     successfully crossed.  Report the object at the *next* intersection in
     the current heading direction so external consumers know where it is.
     """
-    global object_location
+    global object_location, found_object
     next_x = pos[0] + heading[0]
     next_y = pos[1] + heading[1]
     object_location = (next_x, next_y)
     publish_object(next_x, next_y)
     buzz('object')
+    found_object = True
     stop_all()
     debug_log('object found:', next_x, next_y)
     flash_LEDS(BLUE, 1)
@@ -431,7 +431,7 @@ def handle_msg(line):
     Ignores:
       - other status fields we don't currently need
     """
-    global peer_intent, peer_pos, first_clue_seen, object_location, start_signal, intersection_visits
+    global peer_intent, peer_pos, first_clue_seen, object_location, start_signal, intersection_visits, found_object
 
     # Minimal parsing: "<sender>/<topic>:<payload>"
     try:
@@ -477,6 +477,7 @@ def handle_msg(line):
             object_location = (x, y)
         except ValueError:
             object_location = None
+        found_object = True
         stop_all()
         debug_log("object found by other robot")
 
