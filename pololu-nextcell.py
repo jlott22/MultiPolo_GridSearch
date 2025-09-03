@@ -912,8 +912,8 @@ def search_loop():
                 time.sleep_ms(1)
 
             # Arrived → update state & publish
-            record_intersection(pos[0], pos[1])
             pos[0], pos[1] = nxt[0], nxt[1]
+            record_intersection(pos[0], pos[1])
             cell_index = idx(pos[0], pos[1])
             grid[cell_index] = 2
             prob_map[cell_index] = 0.0
