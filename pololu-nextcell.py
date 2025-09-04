@@ -809,6 +809,8 @@ def pick_next_cell():
     """
     choices = []
     weights = []
+    fallback_choices = []
+    fallback_weights = []
     cx, cy = pos[0], pos[1]
     for dx, dy in ((1,0), (-1,0), (0,1), (0,-1)):
         nx, ny = cx + dx, cy + dy
@@ -827,12 +829,20 @@ def pick_next_cell():
             cost += cfg.TURN_PENALTY
         cost += centerward_step_cost(cx, cy, nx, ny)
         weight = reward - cost
-        if weight <= 0:
-            continue
-        choices.append((nx, ny))
-        weights.append(weight)
+        if grid[i] != 2 and weight > 0:
+            choices.append((nx, ny))
+            weights.append(weight)
+        else:
+            # Keep as fallback even if weight <= 0 so we can re-step
+            fallback_choices.append((nx, ny))
+            fallback_weights.append(max(1, weight))
+
     if not choices:
-        return None
+        # All neighbors are visited or unattractive; allow revisiting
+        if not fallback_choices:
+            return None
+        choices = fallback_choices
+        weights = fallback_weights
 
     total = sum(weights)
     r = random.randrange(total)
