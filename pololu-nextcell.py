@@ -195,8 +195,8 @@ CENTER_STEP = 1  # per-step inward cost before the first clue
 # -----------------------------
 class MotionConfig:
     def __init__(self):
-        self.MIDDLE_WHITE_THRESH = 200  # center sensor threshold for "white" (tune by calibration) 
-        self.VISITED_STEP_PENALTY = 15
+        self.MIDDLE_WHITE_THRESH = 200  # center sensor threshold for "white" (tune by calibration)
+        self.VISITED_STEP_PENALTY = 0
         self.KP = 0.5                # proportional gain around LINE_CENTER
         self.CALIBRATE_SPEED = 1130  # speed to rotate when calibrating
         self.BASE_SPEED = 800        # nominal wheel speed
@@ -745,16 +745,17 @@ def update_prob_map():
     Recompute prob_map.
     - Base uniform prior
     - Add Manhattan-decay bumps around all clues
-    - Visited cells get zero probability
+    - Visited cells retain a small probability so the robot can backtrack
     """
+    base = 1 / (GRID_SIZE * GRID_SIZE)
+    visited_base = base * 0.8
     for y in range(GRID_SIZE):
         for x in range(GRID_SIZE):
             i = idx(x, y)
             if grid[i] == 2:  # visited
-                prob_map[i] = 0.0
+                prob_map[i] = visited_base
                 continue
-          
-            base = 1 / (GRID_SIZE * GRID_SIZE)
+
             clue_sum = 0.0
             for (cx, cy) in clues:
                 clue_sum += 5 / (1 + abs(x - cx) + abs(y - cy))
@@ -879,6 +880,8 @@ def search_loop():
             gc.collect()
 
             update_prob_map()
+            if 0 not in grid:
+                break
 
             nxt = pick_next_cell()
             if nxt is None:
@@ -912,7 +915,6 @@ def search_loop():
             record_intersection(pos[0], pos[1])
             cell_index = idx(pos[0], pos[1])
             grid[cell_index] = 2
-            prob_map[cell_index] = 0.0
             publish_position()
             publish_visited(pos[0], pos[1])
 
