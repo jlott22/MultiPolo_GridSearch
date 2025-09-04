@@ -417,7 +417,9 @@ def publish_intent(x, y):
 
 def publish_result(msg):
     """Publish final search metrics or result to the hub."""
-    uart.write("6." + msg + "-")
+    # ``msg`` can be numeric; ensure it is converted to string before
+    # concatenation to avoid ``TypeError: can't convert 'int' object to str``.
+    uart.write("6." + str(msg) + "-")
 
 def handle_msg(line):
     """
