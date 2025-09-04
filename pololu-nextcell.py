@@ -162,7 +162,8 @@ uart = UART(0, baudrate=115200, tx=28, rx=29)
 # -----------------------------
 grid = bytearray(GRID_SIZE * GRID_SIZE)  # 0=unknown, 1=obstacle (reserved), 2=visited
 prob_map = array('f', [1 / (GRID_SIZE * GRID_SIZE)] * (GRID_SIZE * GRID_SIZE))
-# Base reward so unexplored cells are more attractive than small penalties
+# Base reward so explored cells still have positive weight after costs
+BASE_REWARD = 1
 REWARD_FACTOR = 75
 clues = []                            # list of (x, y) clue cells
 
@@ -196,7 +197,7 @@ CENTER_STEP = 1  # per-step inward cost before the first clue
 class MotionConfig:
     def __init__(self):
         self.MIDDLE_WHITE_THRESH = 200  # center sensor threshold for "white" (tune by calibration)
-        self.VISITED_STEP_PENALTY = 0
+        self.VISITED_STEP_PENALTY = 1
         self.KP = 0.5                # proportional gain around LINE_CENTER
         self.CALIBRATE_SPEED = 1130  # speed to rotate when calibrating
         self.BASE_SPEED = 800        # nominal wheel speed
@@ -408,7 +409,7 @@ def publish_intent(x, y):
 
 def publish_result(msg):
     """Publish final search metrics or result to the hub."""
-    uart.write("6." + msg + "-")
+    uart.write("6." + str(msg) + "-")
 
 def handle_msg(line):
     """
@@ -818,7 +819,7 @@ def pick_next_cell():
             continue
         if i_should_yield(nx, ny):
             continue
-        reward = int(prob_map[i] * REWARD_FACTOR)
+        reward = BASE_REWARD + int(prob_map[i] * REWARD_FACTOR)
         cost = 0
         if grid[i] == 2:
             cost += cfg.VISITED_STEP_PENALTY
@@ -826,9 +827,10 @@ def pick_next_cell():
             cost += cfg.TURN_PENALTY
         cost += centerward_step_cost(cx, cy, nx, ny)
         weight = reward - cost
-        if weight > 0:
-            choices.append((nx, ny))
-            weights.append(weight)
+        if weight <= 0:
+            continue
+        choices.append((nx, ny))
+        weights.append(weight)
     if not choices:
         return None
 
@@ -880,7 +882,9 @@ def search_loop():
             gc.collect()
 
             update_prob_map()
-            if 0 not in grid:
+            # MicroPython's bytearray does not implement the "in" operator,
+            # so use find() to detect when all cells have been visited.
+            if grid.find(0) == -1:
                 break
 
             nxt = pick_next_cell()
