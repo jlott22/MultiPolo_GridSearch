@@ -882,9 +882,10 @@ def search_loop():
             gc.collect()
 
             update_prob_map()
-            # MicroPython's bytearray does not implement the "in" operator,
-            # so use find() to detect when all cells have been visited.
-            if grid.find(0) == -1:
+            # MicroPython's ``bytearray.find`` expects a bytes-like argument;
+            # passing an integer raises a ``TypeError``. Search for a null
+            # byte explicitly to detect when all cells have been visited.
+            if grid.find(b'\x00') == -1:
                 break
 
             nxt = pick_next_cell()
