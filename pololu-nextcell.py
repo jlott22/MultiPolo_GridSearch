@@ -61,7 +61,6 @@ ROBOT_ID = "00"  # set to "00", "01", "02", or "03" at deployment
 GRID_SIZE = 5
 GRID_CENTER = (GRID_SIZE - 1) // 2
 
-DEBUG = False
 DEBUG_LOG_FILE = "debug-log.txt"
 
 METRICS_LOG_FILE = "metrics-log.txt"
@@ -73,31 +72,33 @@ intersection_count = 0
 repeat_intersection_count = 0
 object_location = None  # set when object is found
 
+buzzer = None  # will be initialized later
 
-def debug_log(*args):
-    """Write debug messages to a log file when DEBUG is enabled.
 
-    Each entry is stamped with milliseconds since boot and failures are
-    reported to the console.
-    """
-    if not DEBUG:
-        return
-
+def log_error(message):
+    """Log errors and play a low buzzer tone."""
     elapsed_ms = time.ticks_diff(time.ticks_ms(), BOOT_TIME_MS)
-    message = " ".join(str(a) for a in args)
     try:
         with open(DEBUG_LOG_FILE, "a") as _fp:
-            _fp.write(f"{elapsed_ms} {message}\n")
-    except (OSError, MemoryError) as e:
-        # Fall back to console output so the error is not lost
-        try:
-            print("DEBUG_LOG_ERROR:", e)
-        except Exception:
-            pass
+            _fp.write(f"{elapsed_ms} ERROR: {message}\n")
+    except (OSError, MemoryError):
+        pass
+    try:
+        if buzzer is not None:
+            buzzer.play("O2c16")
+    except Exception:
+        pass
+
+
+def safe_assert(condition, message):
+    if not condition:
+        log_error(message)
+        raise AssertionError(message)
 
 
 def record_intersection(x, y):
     """Track intersection visits and repeated counts."""
+    safe_assert(0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE, "intersection out of range")
     global intersection_count, repeat_intersection_count
     intersection_count += 1
     key = (x, y)
@@ -127,14 +128,10 @@ def metrics_log():
     return summary
 
 
-if DEBUG:
-    try:
-        open(DEBUG_LOG_FILE, "a").close()
-    except (OSError, MemoryError) as e:
-        try:
-            print("DEBUG_LOG_INIT_ERROR:", e)
-        except Exception:
-            pass
+try:
+    open(DEBUG_LOG_FILE, "a").close()
+except OSError:
+    pass
 
 try:
     open(METRICS_LOG_FILE, "a").close()
@@ -153,6 +150,8 @@ try:
     START_POS, START_HEADING = START_CONFIG[ROBOT_ID]
 except KeyError as e:
     raise ValueError("ROBOT_ID must be one of '00', '01', '02', or '03'") from e
+safe_assert(0 <= START_POS[0] < GRID_SIZE and 0 <= START_POS[1] < GRID_SIZE,
+            "start position out of bounds")
 
 # UART0 for ESP32 communication (TX=GP28, RX=GP29)
 uart = UART(0, baudrate=115200, tx=28, rx=29)
@@ -175,6 +174,7 @@ clues = []                            # list of (x, y) clue cells
 
 def idx(x, y):
     """Convert Cartesian (x, y) to linear index in map arrays."""
+    safe_assert(0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE, "idx out of range")
     return (GRID_SIZE - 1 - y) * GRID_SIZE + x
 
 
@@ -346,7 +346,6 @@ def stop_and_alert_object():
     buzz('object')
     found_object = True
     stop_all()
-    debug_log('object found:', next_x, next_y)
     flash_LEDS(BLUE, 1)
 
 flash_LEDS(GREEN,1)
@@ -454,7 +453,6 @@ def handle_msg(line):
             prob_map[i] = 0.0
             if (x, y) not in intersection_visits:
                 intersection_visits[(x, y)] = 1
-            debug_log('visited updated:', i)
 
     elif topic == "3":   #clue
         try:
@@ -467,7 +465,6 @@ def handle_msg(line):
                 clues.append(clue)
                 first_clue_seen = True
                 update_prob_map()
-                debug_log('clue updated:', clue)
                 gc.collect()
 
     elif topic == "4": #object
@@ -479,13 +476,11 @@ def handle_msg(line):
             object_location = None
         found_object = True
         stop_all()
-        debug_log("object found by other robot")
 
     elif topic == "1": #position, heading
         if ";" not in payload:
             return
         other_location, other_heading = payload.split(";")
-        debug_log('received position/heading:', f"{other_location}/{other_heading}")
         try:
             ox, oy = map(int, other_location.split(","))
         except ValueError:
@@ -516,7 +511,6 @@ def handle_msg(line):
                     grid[idx(px, py)] = CELL_SEARCHED
         peer_intent[sender] = (ix, iy)
         grid[idx(ix, iy)] = CELL_OBSTACLE
-        debug_log('intended next move:', sender, peer_intent[sender])
     elif topic == "6":  # hub command
         if payload.strip() == "1":
             start_signal = True
@@ -554,14 +548,12 @@ def uart_service():
     data = uart.read()     # returns None or bytes object
     if not data:
         return
-    debug_log('Data Read:', data)
     for b in data:         # iterate over bytes
         rb_put_byte(b)
     while True:
         msg = rb_pull_into_msg()
         if msg is None:
             break
-        debug_log('msg:', msg)
         handle_msg(msg)
 
 # ===========================================================
@@ -994,7 +986,6 @@ _thread.start_new_thread(move_forward_one_cell, ())
 
 # Kick off the mission
 try:
-    debug_log('Pololu running')
     search_loop()
 finally:
     # Ensure absolutely everything is stopped

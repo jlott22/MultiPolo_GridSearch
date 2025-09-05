@@ -17,6 +17,7 @@
 #include <WiFi.h>
 #include "ESP32MQTTClient.h"
 #include <vector>
+#include <assert.h>
 
 // Wi-Fi network credentials
 const char *ssid = "USDresearch";
@@ -55,7 +56,6 @@ void onMqttConnect(esp_mqtt_client_handle_t client)
     if (mqttClient.isMyTurn(client))
     {
         mqttClient.publish(pubpositiontopic.c_str(), "connected", 0, false);
-        Serial.println("Connected to MQTT Broker first time");
 
         // Subscribe to MQTT topics for each peer
         for (const String &peer : otherIDs)
@@ -74,30 +74,24 @@ void onMqttConnect(esp_mqtt_client_handle_t client)
             String hub = "99";
             frameToRobot('6', hub, payload);
         });
-
-        Serial.println("Subscribed to topics first time");
     }
 }
 
 void setup()
 {
-    // Initialize serial ports for debugging and robot communication
+    // Initialize serial ports for robot communication
     Serial.begin(115200);
     robotSerial.begin(115200, SERIAL_8N1, RXD2, TXD2);
 
     // Connect to Wi‑Fi
-    Serial.println("Connecting to Wi-Fi...");
     WiFi.begin(ssid, pass);
     while (WiFi.status() != WL_CONNECTED)
     {
         delay(500);
-        Serial.print(".");
     }
-    Serial.println("\nConnected to Wi-Fi!");
 
     // Configure the MQTT client
     mqttClient.setURI(server);
-    mqttClient.enableDebuggingMessages();                                  // enable MQTT debug logs
     mqttClient.enableLastWillMessage(pubpositiontopic.c_str(), lastWillMessage); // set Last Will message
     mqttClient.setKeepAlive(3);                                            // 5-second keep-alive timeout
 
@@ -110,14 +104,11 @@ void loop()
     // Ensure Wi‑Fi is connected
     if (WiFi.status() != WL_CONNECTED)
     {
-        Serial.println("Wi-Fi disconnected. Attempting reconnection...");
         WiFi.begin(ssid, pass);
         while (WiFi.status() != WL_CONNECTED)
         {
             delay(3000);
-            Serial.print(".");
         }
-        Serial.println("\nWi-Fi reconnected!");
     }
 
     // Ensure MQTT connection
@@ -126,10 +117,7 @@ void loop()
         unsigned long currentMillis = millis();
         if (currentMillis - lastReconnectAttempt > reconnectInterval)
         {
-            Serial.println("MQTT disconnected. Attempting reconnection...");
             lastReconnectAttempt = currentMillis;
-
-            Serial.println("Reconnected to MQTT broker.");
             mqttClient.publish(pubpositiontopic.c_str(), "Reconnected", 0, false);
 
             // Resubscribe to topics after reconnection
@@ -175,14 +163,9 @@ void loop()
 
 void handlemsg(String line) {
   int divider = line.indexOf('.'); // position of the divider in the string
-  if (divider == -1) return;       // ignore malformed messages
-
+  assert(divider != -1);
   String topic = line.substring(0, divider);
   String message = line.substring(divider + 1);
-
-  // Debug output
-  Serial.print("tout: "); Serial.println(topic);
-
   sendtoMQTT(topic, message);
 }
 
