@@ -70,8 +70,14 @@ BOOT_TIME_MS = time.ticks_ms()
 METRIC_START_TIME_MS = None  # set after first post-calibration intersection
 start_signal = False  # set when hub command received
 intersection_visits = {}
-intersection_count = 0
-repeat_intersection_count = 0
+system_visits = {}  # track visits from all robots
+intersection_count = 0          # steps taken by this robot
+repeat_intersection_count = 0   # this robot's revisits
+system_repeat_count = 0         # revisits across the whole system
+yield_count = 0                 # times this robot yielded an intended move
+FIRST_CLUE_TIME_MS = None       # ms from start to first clue (system-wide)
+OBJECT_TIME_MS = None           # ms from start to object detection
+OBJECT_STEP_COUNT = None        # intersections traversed when object was found
 object_location = None  # set when object is found
 
 
@@ -99,7 +105,7 @@ def debug_log(*args):
 
 def record_intersection(x, y):
     """Track intersection visits and repeated counts."""
-    global intersection_count, repeat_intersection_count
+    global intersection_count, repeat_intersection_count, system_repeat_count
     intersection_count += 1
     key = (x, y)
     if key in intersection_visits:
@@ -108,17 +114,44 @@ def record_intersection(x, y):
     else:
         intersection_visits[key] = 1
 
+    # Update system-wide visit counts
+    if key in system_visits:
+        system_visits[key] += 1
+        system_repeat_count += 1
+    else:
+        system_visits[key] = 1
+
 
 def metrics_log():
     """Write summary metrics for the search run and return it."""
     start = METRIC_START_TIME_MS if METRIC_START_TIME_MS is not None else BOOT_TIME_MS
-    elapsed = time.ticks_diff(time.ticks_ms(), start)
-    summary = "elapsed_ms={},intersections={},repeats={},clues={},object={}".format(
-        elapsed,
-        intersection_count,
-        repeat_intersection_count,
-        clues,
-        object_location,
+    now = time.ticks_ms()
+    elapsed = time.ticks_diff(now, start)
+    coverage = (len(system_visits) * 100) / (GRID_SIZE * GRID_SIZE)
+    path_eff = (
+        len(intersection_visits) / intersection_count if intersection_count else 0.0
+    )
+    if object_location is not None and OBJECT_STEP_COUNT:
+        optimal_steps = abs(object_location[0] - START_POS[0]) + abs(object_location[1] - START_POS[1])
+        obj_path_eff = optimal_steps / OBJECT_STEP_COUNT if OBJECT_STEP_COUNT else 0.0
+    else:
+        obj_path_eff = -1.0
+    summary = (
+        "elapsed_ms={},first_clue_ms={},object_ms={},coverage_pct={:.1f},"
+        "steps={},individual_revisits={},system_revisits={},yields={},"
+        "path_eff={:.2f},obj_path_eff={:.2f},object={}".format(
+            elapsed,
+            FIRST_CLUE_TIME_MS if FIRST_CLUE_TIME_MS is not None else -1,
+            OBJECT_TIME_MS if OBJECT_TIME_MS is not None else -1,
+            coverage,
+            intersection_count,
+            repeat_intersection_count,
+            system_repeat_count,
+            yield_count,
+            path_eff,
+            obj_path_eff,
+            object_location,
+        )
     )
     try:
         with open(METRICS_LOG_FILE, "a") as _fp:
@@ -346,13 +379,17 @@ def stop_and_alert_object():
     successfully crossed.  Report the object at the *next* intersection in
     the current heading direction so external consumers know where it is.
     """
-    global object_location, found_object
+    global object_location, found_object, OBJECT_TIME_MS, OBJECT_STEP_COUNT
     next_x = pos[0] + heading[0]
     next_y = pos[1] + heading[1]
     object_location = (next_x, next_y)
     publish_object(next_x, next_y)
     buzz('object')
     found_object = True
+    if OBJECT_TIME_MS is None and METRIC_START_TIME_MS is not None:
+        OBJECT_TIME_MS = time.ticks_diff(time.ticks_ms(), METRIC_START_TIME_MS)
+    if OBJECT_STEP_COUNT is None:
+        OBJECT_STEP_COUNT = intersection_count
     stop_all()
     debug_log('object found:', next_x, next_y)
     flash_LEDS(BLUE, 1)
@@ -441,7 +478,7 @@ def handle_msg(line):
     Ignores:
       - other status fields we don't currently need
     """
-    global peer_intent, peer_pos, first_clue_seen, object_location, start_signal, intersection_visits, found_object
+    global peer_intent, peer_pos, first_clue_seen, object_location, start_signal, found_object, system_visits, system_repeat_count, FIRST_CLUE_TIME_MS, OBJECT_TIME_MS, OBJECT_STEP_COUNT
 
     # Minimal parsing: "<sender>/<topic>:<payload>"
     try:
@@ -462,8 +499,12 @@ def handle_msg(line):
             i = idx(x, y)
             grid[i] = CELL_SEARCHED
             prob_map[i] = 0.0
-            if (x, y) not in intersection_visits:
-                intersection_visits[(x, y)] = 1
+            key = (x, y)
+            if key in system_visits:
+                system_visits[key] += 1
+                system_repeat_count += 1
+            else:
+                system_visits[key] = 1
             debug_log('visited updated:', i)
 
     elif topic == "3":   #clue
@@ -476,6 +517,8 @@ def handle_msg(line):
             if clue not in clues:
                 clues.append(clue)
                 first_clue_seen = True
+                if FIRST_CLUE_TIME_MS is None and METRIC_START_TIME_MS is not None:
+                    FIRST_CLUE_TIME_MS = time.ticks_diff(time.ticks_ms(), METRIC_START_TIME_MS)
                 update_prob_map()
                 debug_log('clue updated:', clue)
                 gc.collect()
@@ -488,6 +531,10 @@ def handle_msg(line):
         except ValueError:
             object_location = None
         found_object = True
+        if OBJECT_TIME_MS is None and METRIC_START_TIME_MS is not None:
+            OBJECT_TIME_MS = time.ticks_diff(time.ticks_ms(), METRIC_START_TIME_MS)
+        if OBJECT_STEP_COUNT is None:
+            OBJECT_STEP_COUNT = intersection_count
         stop_all()
         debug_log("object found by other robot")
 
@@ -971,7 +1018,7 @@ def search_loop():
 
     Motors are always stopped in a ``finally`` block.
     """
-    global first_clue_seen, move_forward_flag, start_signal, METRIC_START_TIME_MS, pos
+    global first_clue_seen, move_forward_flag, start_signal, METRIC_START_TIME_MS, pos, yield_count, FIRST_CLUE_TIME_MS
 
     try:
         calibrate()
@@ -1016,6 +1063,7 @@ def search_loop():
 
             if i_should_yield(nxt[0], nxt[1]):
                 # Short back-off then replan
+                yield_count += 1
                 time.sleep_ms(300)
                 continue
 
@@ -1043,6 +1091,8 @@ def search_loop():
                 if clue not in clues:
                     clues.append(clue)
                     first_clue_seen = True
+                    if FIRST_CLUE_TIME_MS is None and METRIC_START_TIME_MS is not None:
+                        FIRST_CLUE_TIME_MS = time.ticks_diff(time.ticks_ms(), METRIC_START_TIME_MS)
                     publish_clue(pos[0], pos[1])
                     update_prob_map()
                     # releasing temporaries created during map update
