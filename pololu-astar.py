@@ -161,7 +161,12 @@ uart = UART(0, baudrate=115200, tx=28, rx=29)
 # -----------------------------
 # Grid / Maps / Shared State
 # -----------------------------
-grid = bytearray(GRID_SIZE * GRID_SIZE)  # 0=unknown, 1=obstacle (reserved), 2=visited
+# Grid cell states
+CELL_UNSEARCHED = 0
+CELL_OBSTACLE   = 1  # object or peer reservation
+CELL_SEARCHED   = 2
+
+grid = bytearray(GRID_SIZE * GRID_SIZE)
 prob_map = array('f', [1 / (GRID_SIZE * GRID_SIZE)] * (GRID_SIZE * GRID_SIZE))
 REWARD_FACTOR = 5
 clues = []                            # list of (x, y) clue cells
@@ -455,7 +460,7 @@ def handle_msg(line):
             return
         if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
             i = idx(x, y)
-            grid[i] = 2
+            grid[i] = CELL_SEARCHED
             prob_map[i] = 0.0
             if (x, y) not in intersection_visits:
                 intersection_visits[(x, y)] = 1
@@ -495,14 +500,32 @@ def handle_msg(line):
             ox, oy = map(int, other_location.split(","))
         except ValueError:
             return
+        if not (0 <= ox < GRID_SIZE and 0 <= oy < GRID_SIZE):
+            return
+        prev = peer_pos.get(sender)
+        if prev and prev != (ox, oy):
+            px, py = prev
+            if 0 <= px < GRID_SIZE and 0 <= py < GRID_SIZE:
+                if peer_intent.get(sender) != (px, py):
+                    grid[idx(px, py)] = CELL_SEARCHED
         peer_pos[sender] = (ox, oy)
+        grid[idx(ox, oy)] = CELL_OBSTACLE
 
     elif topic == "5": #intent
         try:
             ix, iy = map(int, payload.split(","))
         except ValueError:
             return
+        if not (0 <= ix < GRID_SIZE and 0 <= iy < GRID_SIZE):
+            return
+        prev = peer_intent.get(sender)
+        if prev and prev != (ix, iy):
+            px, py = prev
+            if 0 <= px < GRID_SIZE and 0 <= py < GRID_SIZE:
+                if peer_pos.get(sender) != (px, py):
+                    grid[idx(px, py)] = CELL_SEARCHED
         peer_intent[sender] = (ix, iy)
+        grid[idx(ix, iy)] = CELL_OBSTACLE
         debug_log('intended next move:', sender, peer_intent[sender])
     elif topic == "6":  # hub command
         if payload.strip() == "1":
@@ -663,7 +686,7 @@ def calibrate():
         time.sleep_ms(1)
     pos[0], pos[1] = START_POS
     if 0 <= pos[0] < GRID_SIZE and 0 <= pos[1] < GRID_SIZE:
-        grid[idx(pos[0], pos[1])] = 2
+        grid[idx(pos[0], pos[1])] = CELL_SEARCHED
     update_prob_map()
     publish_position()
     publish_visited(pos[0], pos[1])
@@ -761,7 +784,7 @@ def update_prob_map():
     for y in range(GRID_SIZE):
         for x in range(GRID_SIZE):
             i = idx(x, y)
-            if grid[i] == 2:  # visited
+            if grid[i] == CELL_SEARCHED:  # visited
                 prob_map[i] = 0.0
                 continue
           
@@ -821,14 +844,14 @@ def pick_goal():
     fx, fy = pos[0] + heading[0], pos[1] + heading[1]
     if 0 <= fx < GRID_SIZE and 0 <= fy < GRID_SIZE:
         i = idx(fx, fy)
-        if grid[i] == 0:
+        if grid[i] == CELL_UNSEARCHED:
             best = (fx, fy)
             best_val = prob_map[i] * REWARD_FACTOR
 
     for y in range(GRID_SIZE):
         for x in range(GRID_SIZE):
             i = idx(x, y)
-            if grid[i] != 0:
+            if grid[i] != CELL_UNSEARCHED:
                 continue
             val = prob_map[i] * REWARD_FACTOR
             if val > best_val:
@@ -837,7 +860,7 @@ def pick_goal():
 
     if best is None:
         # Fallback: nearest unknown
-        unknowns = [(x, y) for y in range(GRID_SIZE) for x in range(GRID_SIZE) if grid[idx(x, y)] == 0]
+        unknowns = [(x, y) for y in range(GRID_SIZE) for x in range(GRID_SIZE) if grid[idx(x, y)] == CELL_UNSEARCHED]
         if unknowns:
             best = min(unknowns, key=lambda c: abs(c[0] - pos[0]) + abs(c[1] - pos[1]))
     return best
@@ -879,7 +902,7 @@ def a_star(start, goal):
             if not (0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE):
                 continue
             i = idx(nx, ny)
-            if grid[i] == 1:  # 1 = obstacle/reserved
+            if grid[i] == CELL_OBSTACLE:  # obstacle/reserved
                 continue
 
             new_cost = cost_so_far[current_idx] + 1
@@ -889,7 +912,7 @@ def a_star(start, goal):
                 new_cost += 1
 
             # 🔹 Penalty for retracing visited cell
-            if grid[i] == 2:   # 2 = visited
+            if grid[i] == CELL_SEARCHED:   # visited
                 new_cost += cfg.VISITED_STEP_PENALTY
 
             # Pre-clue: penalize inward hops (serpentine)
@@ -1009,7 +1032,7 @@ def search_loop():
             # Arrived → update state & publish
             pos[0], pos[1] = nxt[0], nxt[1]
             record_intersection(pos[0], pos[1])
-            grid[idx(pos[0], pos[1])] = 2
+            grid[idx(pos[0], pos[1])] = CELL_SEARCHED
             publish_position()
             publish_visited(pos[0], pos[1])
 
