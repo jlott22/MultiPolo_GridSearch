@@ -821,7 +821,14 @@ def pick_next_cell():
             continue
         if i_should_yield(nx, ny):
             continue
-        reward = BASE_REWARD + int(prob_map[i] * REWARD_FACTOR)
+        if grid[i] == 2:
+            # Already searched cells ignore probability boosts so unknown cells
+            # always outrank them.
+            reward = BASE_REWARD
+        else:
+            # Give unsearched cells a small extra bump so they remain more
+            # desirable than any previously visited neighbor.
+            reward = BASE_REWARD + 1 + int(prob_map[i] * REWARD_FACTOR)
         cost = 0
         if grid[i] == 2:
             cost += cfg.VISITED_STEP_PENALTY
@@ -833,9 +840,14 @@ def pick_next_cell():
             choices.append((nx, ny))
             weights.append(weight)
         else:
-            # Keep as fallback even if weight <= 0 so we can re-step
+            # Keep as fallback even if weight <= 0 so we can re-step.
+            # Use fixed weights so unknown cells remain more attractive than
+            # visited cells when all neighbors are poor choices.
             fallback_choices.append((nx, ny))
-            fallback_weights.append(max(1, weight))
+            if grid[i] == 2:
+                fallback_weights.append(1)
+            else:
+                fallback_weights.append(max(2, weight))
 
     if not choices:
         # All neighbors are visited or unattractive; allow revisiting
