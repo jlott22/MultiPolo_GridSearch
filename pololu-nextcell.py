@@ -126,9 +126,9 @@ def metrics_log():
     start = METRIC_START_TIME_MS if METRIC_START_TIME_MS is not None else BOOT_TIME_MS
     now = time.ticks_ms()
     elapsed = time.ticks_diff(now, start)
-    coverage = (len(system_visits) * 100) / (GRID_SIZE * GRID_SIZE)
+    unique_cells = len(intersection_visits)
     path_eff = (
-        len(intersection_visits) / intersection_count if intersection_count else 0.0
+        unique_cells / intersection_count if intersection_count else 0.0
     )
     if object_location is not None and OBJECT_STEP_COUNT:
         optimal_steps = abs(object_location[0] - START_POS[0]) + abs(object_location[1] - START_POS[1])
@@ -136,13 +136,13 @@ def metrics_log():
     else:
         obj_path_eff = -1.0
     summary = (
-        "elapsed_ms={},first_clue_ms={},object_ms={},coverage_pct={:.1f},"
+        "elapsed_ms={},first_clue_ms={},object_ms={},unique_cells={},"
         "steps={},individual_revisits={},system_revisits={},yields={},"
-        "path_eff={:.2f},obj_path_eff={:.2f},object={}".format(
+        "path_eff={:.2f},obj_path_eff={:.2f},object={},clues={}".format(
             elapsed,
             FIRST_CLUE_TIME_MS if FIRST_CLUE_TIME_MS is not None else -1,
             OBJECT_TIME_MS if OBJECT_TIME_MS is not None else -1,
-            coverage,
+            unique_cells,
             intersection_count,
             repeat_intersection_count,
             system_repeat_count,
@@ -150,6 +150,7 @@ def metrics_log():
             path_eff,
             obj_path_eff,
             object_location,
+            clues,
         )
     )
     try:
