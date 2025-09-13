@@ -18,16 +18,20 @@ def weighted_clue_locations(
     ``1 / (1 + r)``, making nearby cells more likely.
     """
 
-    weights = [1 / (1 + math.hypot(cx - obj[0], cy - obj[1])) for cx, cy in cells]
-    available = cells.copy()
-    weights_copy = weights.copy()
+    # Candidate cells exclude the object's location so it never appears as a
+    # clue. We keep a parallel list of weights for sampling.
+    available = [cell for cell in cells if cell != obj]
+    weights = [
+        1 / (1 + math.hypot(cx - obj[0], cy - obj[1]))
+        for cx, cy in available
+    ]
     clues: List[Tuple[int, int]] = []
     while len(clues) < clues_per_object and available:
-        clue = random.choices(available, weights=weights_copy, k=1)[0]
+        clue = random.choices(available, weights=weights, k=1)[0]
         clues.append(clue)
         idx = available.index(clue)
         available.pop(idx)
-        weights_copy.pop(idx)
+        weights.pop(idx)
     return clues
 
 
