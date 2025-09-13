@@ -75,6 +75,7 @@ intersection_count = 0          # steps taken by this robot
 repeat_intersection_count = 0   # this robot's revisits
 system_repeat_count = 0         # revisits across the whole system
 yield_count = 0                 # times this robot yielded an intended move
+goal_replan_count = 0           # times our goal was taken and we replanned
 FIRST_CLUE_TIME_MS = None       # ms from start to first clue (system-wide)
 OBJECT_TIME_MS = None           # ms from start to object detection
 OBJECT_STEP_COUNT = None        # intersections traversed when object was found
@@ -155,6 +156,7 @@ def metrics_log():
         "individual_revisits": repeat_intersection_count,
         "system_revisits": system_repeat_count,
         "yields": yield_count,
+        "goal_replans": goal_replan_count,
         "path_eff": round(path_eff, 2),
         "obj_path_eff": round(obj_path_eff, 2),
         "object": object_location,
@@ -172,6 +174,7 @@ def metrics_log():
         "individual_revisits",
         "system_revisits",
         "yields",
+        "goal_replans",
         "path_eff",
         "obj_path_eff",
         "object",
@@ -534,7 +537,7 @@ def handle_msg(line):
     Ignores:
       - other status fields we don't currently need
     """
-    global peer_intent, peer_pos, peer_goal, current_goal, first_clue_seen, object_location, start_signal, found_object, system_visits, system_repeat_count, FIRST_CLUE_TIME_MS, OBJECT_TIME_MS, OBJECT_STEP_COUNT
+    global peer_intent, peer_pos, peer_goal, current_goal, first_clue_seen, object_location, start_signal, found_object, system_visits, system_repeat_count, FIRST_CLUE_TIME_MS, OBJECT_TIME_MS, OBJECT_STEP_COUNT, goal_replan_count
 
     # Minimal parsing: "<sender>/<topic>:<payload>"
     try:
@@ -638,6 +641,7 @@ def handle_msg(line):
             if current_goal == (gx, gy):
                 # our goal is taken; force replanning
                 current_goal = None
+                goal_replan_count += 1
     elif topic == "6":  # hub command
         if payload.strip() == "1":
             start_signal = True
