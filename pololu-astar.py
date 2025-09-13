@@ -45,6 +45,7 @@ import _thread
 import heapq
 import sys
 import gc
+import csv
 from array import array
 from machine import UART, Pin
 from pololu_3pi_2040_robot import robot
@@ -128,7 +129,7 @@ def record_intersection(x, y):
 
 
 def metrics_log():
-    """Write summary metrics for the search run and return it."""
+    """Write summary metrics for the search run and return them."""
     start = METRIC_START_TIME_MS if METRIC_START_TIME_MS is not None else BOOT_TIME_MS
     now = time.ticks_ms()
     elapsed = time.ticks_diff(now, start)
@@ -142,32 +143,55 @@ def metrics_log():
         obj_path_eff = optimal_steps / OBJECT_STEP_COUNT if OBJECT_STEP_COUNT else 0.0
     else:
         obj_path_eff = -1.0
-    summary = (
-        "elapsed_ms={},compute_ms={},motor_ms={},first_clue_ms={},object_ms={},unique_cells={},"
-        "steps={},individual_revisits={},system_revisits={},yields={},"
-        "path_eff={:.2f},obj_path_eff={:.2f},object={},clues={}".format(
-            elapsed,
-            compute_time,
-            motor_time_ms,
-            FIRST_CLUE_TIME_MS if FIRST_CLUE_TIME_MS is not None else -1,
-            OBJECT_TIME_MS if OBJECT_TIME_MS is not None else -1,
-            unique_cells,
-            intersection_count,
-            repeat_intersection_count,
-            system_repeat_count,
-            yield_count,
-            path_eff,
-            obj_path_eff,
-            object_location,
-            clues,
-        )
-    )
+
+    metrics = {
+        "elapsed_ms": elapsed,
+        "compute_ms": compute_time,
+        "motor_ms": motor_time_ms,
+        "first_clue_ms": FIRST_CLUE_TIME_MS if FIRST_CLUE_TIME_MS is not None else -1,
+        "object_ms": OBJECT_TIME_MS if OBJECT_TIME_MS is not None else -1,
+        "unique_cells": unique_cells,
+        "steps": intersection_count,
+        "individual_revisits": repeat_intersection_count,
+        "system_revisits": system_repeat_count,
+        "yields": yield_count,
+        "path_eff": round(path_eff, 2),
+        "obj_path_eff": round(obj_path_eff, 2),
+        "object": object_location,
+        "clues": clues,
+    }
+
+    fieldnames = [
+        "elapsed_ms",
+        "compute_ms",
+        "motor_ms",
+        "first_clue_ms",
+        "object_ms",
+        "unique_cells",
+        "steps",
+        "individual_revisits",
+        "system_revisits",
+        "yields",
+        "path_eff",
+        "obj_path_eff",
+        "object",
+        "clues",
+    ]
+
     try:
-        with open(METRICS_LOG_FILE, "a") as _fp:
-            _fp.write(summary + "\n")
+        try:
+            with open(METRICS_LOG_FILE) as _fp:
+                write_header = _fp.read(1) == ""
+        except OSError:
+            write_header = True
+        with open(METRICS_LOG_FILE, "a", newline="") as _fp:
+            writer = csv.DictWriter(_fp, fieldnames=fieldnames)
+            if write_header:
+                writer.writeheader()
+            writer.writerow(metrics)
     except OSError:
         pass
-    return summary
+    return metrics
 
 
 try:
