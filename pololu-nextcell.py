@@ -80,6 +80,10 @@ object_location = None  # set when object is found
 
 buzzer = None  # will be initialized later
 
+# Energy/Time metrics
+motor_time_ms = 0              # cumulative ms motors were commanded non-zero
+_motor_start_ms = None         # internal tracker for motor activity
+
 
 def log_error(message):
     """Log errors and play a low buzzer tone."""
@@ -130,16 +134,19 @@ def metrics_log():
     path_eff = (
         unique_cells / intersection_count if intersection_count else 0.0
     )
+    compute_time = elapsed - motor_time_ms
     if object_location is not None and OBJECT_STEP_COUNT:
         optimal_steps = abs(object_location[0] - START_POS[0]) + abs(object_location[1] - START_POS[1])
         obj_path_eff = optimal_steps / OBJECT_STEP_COUNT if OBJECT_STEP_COUNT else 0.0
     else:
         obj_path_eff = -1.0
     summary = (
-        "elapsed_ms={},first_clue_ms={},object_ms={},unique_cells={},"
+        "elapsed_ms={},compute_ms={},motor_ms={},first_clue_ms={},object_ms={},unique_cells={},"
         "steps={},individual_revisits={},system_revisits={},yields={},"
         "path_eff={:.2f},obj_path_eff={:.2f},object={},clues={}".format(
             elapsed,
+            compute_time,
+            motor_time_ms,
             FIRST_CLUE_TIME_MS if FIRST_CLUE_TIME_MS is not None else -1,
             OBJECT_TIME_MS if OBJECT_TIME_MS is not None else -1,
             unique_cells,
@@ -343,10 +350,23 @@ def buzz(event):
 
         
 flash_LEDS(GREEN,1)
-    
+
+def set_speeds(left, right):
+    """Wrapper to track motor active time before delegating to hardware."""
+    global _motor_start_ms, motor_time_ms
+    if left != 0 or right != 0:
+        if _motor_start_ms is None:
+            _motor_start_ms = time.ticks_ms()
+    else:
+        if _motor_start_ms is not None:
+            motor_time_ms += time.ticks_diff(time.ticks_ms(), _motor_start_ms)
+            _motor_start_ms = None
+    motors.set_speeds(left, right)
+
+
 def motors_off():
     """Hard stop both wheels (safety: call in finally/stop paths)."""
-    motors.set_speeds(0, 0)
+    set_speeds(0, 0)
 
 def stop_all():
     """
@@ -641,7 +661,7 @@ def move_forward_one_cell():
 
             # 3) During initial lock window, always drive straight
             if time.ticks_diff(time.ticks_ms(), lock_release_time) < 0:
-                motors.set_speeds(cfg.STRAIGHT_CREEP, cfg.STRAIGHT_CREEP)
+                set_speeds(cfg.STRAIGHT_CREEP, cfg.STRAIGHT_CREEP)
                 continue
             
             # 2) Read sensors
@@ -664,7 +684,7 @@ def move_forward_one_cell():
             # 6) Normal P-control when not locked
             total = readings[0] + readings[1] + readings[2] + readings[3] + readings[4]
             if total == 0:
-                motors.set_speeds(cfg.STRAIGHT_CREEP, cfg.STRAIGHT_CREEP)
+                set_speeds(cfg.STRAIGHT_CREEP, cfg.STRAIGHT_CREEP)
                 continue
             # weights: 0, 1000, 2000, 3000, 4000
             pos = (0*readings[0] + 1000*readings[1] + 2000*readings[2] + 3000*readings[3] + 4000*readings[4]) // total
@@ -673,7 +693,7 @@ def move_forward_one_cell():
 
             left  = _clamp(cfg.BASE_SPEED + correction, cfg.MIN_SPD, cfg.MAX_SPD)
             right = _clamp(cfg.BASE_SPEED - correction, cfg.MIN_SPD, cfg.MAX_SPD)
-            motors.set_speeds(left, right)
+            set_speeds(left, right)
 
         # Shorter sleep to allow rapid response when move_forward_flag is set
         time.sleep_ms(20)
@@ -699,7 +719,7 @@ def calibrate():
             motors_off()
             return
 
-        motors.set_speeds(cfg.CALIBRATE_SPEED, -cfg.CALIBRATE_SPEED)
+        set_speeds(cfg.CALIBRATE_SPEED, -cfg.CALIBRATE_SPEED)
         line_sensors.calibrate()
         time.sleep_ms(5)
         
@@ -757,23 +777,23 @@ def rotate_degrees(deg):
         return
     
     #inch forward to make clean turn
-    motors.set_speeds(cfg.BASE_SPEED, cfg.BASE_SPEED)
+    set_speeds(cfg.BASE_SPEED, cfg.BASE_SPEED)
     time.sleep(.15)
     motors_off()
 
     if deg == 180 or deg == -180:
         buzz('turn')
-        motors.set_speeds(cfg.TURN_SPEED, -cfg.TURN_SPEED)
+        set_speeds(cfg.TURN_SPEED, -cfg.TURN_SPEED)
         if running: time.sleep(cfg.YAW_180_MS)
 
     elif deg == 90:
         buzz('turn')
-        motors.set_speeds(cfg.TURN_SPEED, -cfg.TURN_SPEED)
+        set_speeds(cfg.TURN_SPEED, -cfg.TURN_SPEED)
         if running: time.sleep(cfg.YAW_90_MS)
 
     elif deg == -90:
         buzz('turn')
-        motors.set_speeds(-cfg.TURN_SPEED, cfg.TURN_SPEED)
+        set_speeds(-cfg.TURN_SPEED, cfg.TURN_SPEED)
         if running: time.sleep(cfg.YAW_90_MS)
 
     motors_off()
