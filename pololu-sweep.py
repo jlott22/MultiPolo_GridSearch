@@ -46,7 +46,6 @@ import _thread
 import heapq
 import sys
 import gc
-import csv
 from array import array
 from machine import UART, Pin
 from pololu_3pi_2040_robot import robot
@@ -185,11 +184,10 @@ def metrics_log():
                 write_header = _fp.read(1) == ""
         except OSError:
             write_header = True
-        with open(METRICS_LOG_FILE, "a", newline="") as _fp:
-            writer = csv.DictWriter(_fp, fieldnames=fieldnames)
+        with open(METRICS_LOG_FILE, "a") as _fp:
             if write_header:
-                writer.writeheader()
-            writer.writerow(metrics)
+                _fp.write(",".join(fieldnames) + "\n")
+            _fp.write(",".join(str(metrics[f]) for f in fieldnames) + "\n")
     except OSError:
         pass
     return metrics

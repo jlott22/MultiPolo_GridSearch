@@ -71,6 +71,7 @@ A helper script, **`clue_object_generator.py`**, produces random object and clue
 - Modify the UART pins or baud rates in both files if you use different wiring.
 - `searchesp32.ino` and `searchesp32_reservation.ino` attempt automatic reconnection to Wi‑Fi and MQTT if the connection drops.
 - `pololu-astar.py` and related scripts write debug information to `debug-log.txt` and summary metrics to `metrics-log.txt`.
+- The metrics file is plain text: a single header line followed by comma-separated values so it can be parsed without the `csv` module.
 - Use `clue_object_generator.py` to produce random clue/object layouts for experiments.
 - Use the Pololu debug LEDs and serial output for troubleshooting.
 
