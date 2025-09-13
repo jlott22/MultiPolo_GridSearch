@@ -45,12 +45,13 @@ def weighted_clue_locations(
 
 def generate_trials(
     grid_size: int = 10,
-    num_trials: int = 34,
+    num_trials: int = 40,
     clues_per_object: int = 2,
 ) -> List[Dict[str, List[Tuple[int, int]]]]:
     """Generate trial data for object and clue locations.
 
-    The first 17 trials weight clues by ``1 / (1 + r)`` and the remaining 17 by
+    When ``num_trials`` is left at its default of ``40``, the first ``20`` trials
+    weight clues by ``1 / (1 + r)`` and the remaining ``20`` weight clues by
     ``1 / (1 + r**2)``.
     """
 
@@ -58,7 +59,7 @@ def generate_trials(
     trials = []
     for i in range(num_trials):
         obj = (random.randrange(grid_size), random.randrange(grid_size))
-        mode = "linear" if i < 17 else "square"
+        mode = "linear" if i < 20 else "square"
         clues = weighted_clue_locations(obj, cells, clues_per_object, mode)
         trials.append({"object": obj, "clues": clues})
     return trials
@@ -67,7 +68,7 @@ def generate_trials(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Clue and object generator")
     parser.add_argument("--grid-size", type=int, default=10, help="grid dimension")
-    parser.add_argument("--trials", type=int, default=34, help="number of trials")
+    parser.add_argument("--trials", type=int, default=40, help="number of trials")
     parser.add_argument(
         "--seed", type=int, default=None, help="random seed for reproducibility"
     )
