@@ -1,14 +1,28 @@
 # Pololu MQTT Search
 
-This repository contains a two-part system for coordinating Pololu 3pi+ 2040 robots through MQTT using an ESP32 bridge.
+This repository contains MicroPython programs and ESP32 sketches for coordinating Pololu 3pi+ 2040 robots through MQTT. An ESP32 acts as a serial-to-MQTT bridge for one or more robots.
 
 ## Overview
 
-This project coordinates one or more Pololu 3pi+ 2040 robots using an ESP32 as a serial-to-MQTT bridge. The robot runs `pololu-astar.py`, which performs an A* search over a 2-D grid:
+This project coordinates one or more Pololu 3pi+ 2040 robots using an ESP32 as a serial-to-MQTT bridge. Several robot strategies are available:
 
-1. **Planning** – The script maintains maps of visited cells, clue locations, and probabilities. It plans the next step with A*; costs include turns, center-ward bias for the initial lawn-mower sweep, intent reservations from a peer robot, and accumulated rewards after clues are found.
-2. **Execution** – The robot turns toward the next cell, moves one grid square, and updates its internal maps. Bumps trigger an immediate stop.
-3. **Messaging** – After each action it sends UART frames like `1.x,y;dx,dy` (position), `2.x,y` (visited), `3.x,y` (clue), `4.x,y` (alert/object), or `5.x,y` (intent). An ESP32 running `searchesp32.ino` listens on UART, publishes to MQTT topics named `<clientID><topicDigit>`, and relays any incoming MQTT commands back to the robot.
+- **`pololu-astar.py`** – A* search with probability maps and intent reservations.
+- **`pololu-astar-reservation.py`** – A* search that also publishes goal reservations.
+- **`pololu-nextcell.py`** – Probabilistic neighbor selection without full path planning.
+- **`pololu-sweep.py`** – Hardcoded lawn‑mower sweep path.
+
+Companion ESP32 sketches translate the robot's UART frames to MQTT:
+
+- **`searchesp32.ino`** – Basic UART→MQTT bridge.
+- **`searchesp32_reservation.ino`** – Bridge with intent and goal reservation topics.
+
+A helper script, **`clue_object_generator.py`**, produces random object and clue layouts for testing.
+
+### Algorithm summary
+
+1. **Planning** – Depending on the script, robots either plan full A* paths or select the next cell probabilistically. Planning accounts for turns, center‑ward bias, peer reservations, and clue rewards.
+2. **Execution** – Robots turn toward the next cell, move one grid square, and update internal maps. Bumps trigger an immediate stop.
+3. **Messaging** – After each action robots send UART frames like `1.x,y;dx,dy` (position), `2.x,y` (visited), `3.x,y` (clue), `4.x,y` (alert/object), `5.x,y` (intent), or `7.x,y` (goal reservation). The ESP32 publishes these to topics named `<clientID><topicDigit>` and relays MQTT commands back over UART.
 
 ### Example message flow
 
@@ -20,8 +34,9 @@ This project coordinates one or more Pololu 3pi+ 2040 robots using an ESP32 as a
 
 ## Components
 
-- **`pololu-astar.py`** – MicroPython program for the Pololu 3pi+ 2040 OLED. It performs a grid search, communicates over UART, and sends position, visited cell, clue, alert, and intent messages to an attached ESP32 that forwards them to MQTT.
-- **`searchesp32.ino`** – Arduino sketch for an ESP32 that bridges UART messages from the Pololu robot to an MQTT broker and subscribes to the same topics for commands.
+- **`pololu-astar.py`**, **`pololu-astar-reservation.py`**, **`pololu-nextcell.py`**, and **`pololu-sweep.py`** – MicroPython programs for the Pololu 3pi+ 2040 OLED implementing different grid search strategies.
+- **`searchesp32.ino`** and **`searchesp32_reservation.ino`** – Arduino sketches that bridge UART messages to an MQTT broker and forward commands back to the robot.
+- **`clue_object_generator.py`** – Utility for generating random object and clue locations for trials.
 
 ## Hardware setup
 
@@ -34,13 +49,13 @@ This project coordinates one or more Pololu 3pi+ 2040 robots using an ESP32 as a
 ### Pololu robot
 
 1. Flash MicroPython on the Pololu 3pi+ 2040.
-2. Copy `pololu-astar.py` to the device.
+2. Copy one of the robot scripts (`pololu-astar.py`, `pololu-astar-reservation.py`, `pololu-nextcell.py`, or `pololu-sweep.py`) to the device.
 3. Adjust settings in the script for your grid size, starting pose, and tuning constants if needed.
 
 ### ESP32 bridge
 
 1. Install the Arduino ESP32 core and the `ESP32MQTTClient` library.
-2. Open `searchesp32.ino` in the Arduino IDE or PlatformIO.
+2. Open `searchesp32.ino` or `searchesp32_reservation.ino` in the Arduino IDE or PlatformIO.
 3. Set your Wi‑Fi SSID, password, MQTT broker URI, and robot `clientID`.
 4. Upload the sketch to the ESP32.
 
@@ -48,14 +63,15 @@ This project coordinates one or more Pololu 3pi+ 2040 robots using an ESP32 as a
 
 1. Power both the Pololu robot and ESP32.
 2. Ensure the ESP32 connects to Wi‑Fi and the MQTT broker.
-3. Start the MicroPython script on the robot; it will plan and move using A* search and exchange messages with the ESP32 over UART.
-4. Monitor MQTT topics such as `<clientID>1` (position), `<clientID>2` (visited), `<clientID>3` (clue), `<clientID>4` (alert/object), and `<clientID>5` (intent) to track robot activity.
+3. Start the chosen MicroPython script on the robot; it will select and move to new grid cells while exchanging messages with the ESP32 over UART.
+4. Monitor MQTT topics such as `<clientID>1` (position), `<clientID>2` (visited), `<clientID>3` (clue), `<clientID>4` (alert/object), `<clientID>5` (intent), and `<clientID>7` (goal reservation when using the reservation variant) to track robot activity.
 
 ## Notes
 
 - Modify the UART pins or baud rates in both files if you use different wiring.
-- `searchesp32.ino` attempts automatic reconnection to Wi‑Fi and MQTT if the connection drops.
-- `pololu-astar.py` writes debug information to `debug-log.txt` and summary metrics to `metrics-log.txt`.
+- `searchesp32.ino` and `searchesp32_reservation.ino` attempt automatic reconnection to Wi‑Fi and MQTT if the connection drops.
+- `pololu-astar.py` and related scripts write debug information to `debug-log.txt` and summary metrics to `metrics-log.txt`.
+- Use `clue_object_generator.py` to produce random clue/object layouts for experiments.
 - Use the Pololu debug LEDs and serial output for troubleshooting.
 
 ## License
