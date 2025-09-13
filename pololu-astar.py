@@ -60,7 +60,7 @@ from pololu_3pi_2040_robot.buzzer import Buzzer
 # Robot identity & start pose
 # -----------------------------
 ROBOT_ID = "00"  # set to "00", "01", "02", or "03" at deployment
-GRID_SIZE = 5
+GRID_SIZE = 10
 GRID_CENTER = (GRID_SIZE - 1) / 2
 
 DEBUG_LOG_FILE = "debug-log.txt"
