@@ -1153,6 +1153,5 @@ try:
 finally:
     # Ensure absolutely everything is stopped
     running = False
-    stop_all()
     flash_LEDS(RED,5)
     time.sleep_ms(200)  # give RX thread time to fall out cleanly
