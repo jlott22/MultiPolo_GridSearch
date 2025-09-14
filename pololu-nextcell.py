@@ -935,7 +935,7 @@ def pick_next_cell():
         else:
             # Give unsearched cells a small extra bump so they remain more
             # desirable than any previously visited neighbor.
-            reward = BASE_REWARD + 1 + int(prob_map[i] * REWARD_FACTOR)
+            reward = BASE_REWARD + 1 + prob_map[i] * REWARD_FACTOR
         cost = 0
         if grid[i] == CELL_SEARCHED:
             cost += cfg.VISITED_STEP_PENALTY
@@ -964,7 +964,7 @@ def pick_next_cell():
         weights = fallback_weights
 
     total = sum(weights)
-    r = random.randrange(total)
+    r = random.uniform(0, total)
     acc = 0
     for cell, w in zip(choices, weights):
         acc += w
