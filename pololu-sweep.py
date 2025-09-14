@@ -278,7 +278,7 @@ def generate_sweep_path():
         else:
             rows = range(GRID_SIZE - 1, -1, -1)
 
-        path = []
+        row_cells = []  # cells for each row assigned to this robot
         for i, y in enumerate(rows):
             xs = [x for x in range(GRID_SIZE) if owner(x, y) == ROBOT_ID]
             if not xs:
@@ -287,8 +287,32 @@ def generate_sweep_path():
                 xs = xs if i % 2 == 0 else list(reversed(xs))
             else:
                 xs = list(reversed(xs)) if i % 2 == 0 else xs
-            for x in xs:
-                path.append((x, y))
+            row_cells.append([(x, y) for x in xs])
+
+        path = []
+        for cells in row_cells:
+            if not path:
+                path.extend(cells)
+                continue
+            prev_x, prev_y = path[-1]
+            target_x, target_y = cells[0]
+            # connect rows using only orthogonal moves to avoid diagonal jumps
+            if prev_x != target_x and prev_y != target_y:
+                inter_h = (target_x, prev_y)
+                inter_v = (prev_x, target_y)
+                if owner(*inter_h) == ROBOT_ID:
+                    path.append(inter_h)
+                else:
+                    path.append(inter_v)
+                path.append((target_x, target_y))
+            else:
+                while prev_x != target_x:
+                    prev_x += 1 if target_x > prev_x else -1
+                    path.append((prev_x, prev_y))
+                while prev_y != target_y:
+                    prev_y += 1 if target_y > prev_y else -1
+                    path.append((prev_x, prev_y))
+            path.extend(cells[1:])
         return path
 
     raise ValueError("Supports only 1, 2, or 4 robots")
