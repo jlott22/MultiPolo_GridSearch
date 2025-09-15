@@ -549,7 +549,6 @@ def handle_msg(line):
                 system_repeat_count += 1
             else:
                 system_visits[key] = 1
-            debug_log('visited updated:', i)
 
     elif topic == "3":   #clue
         try:
