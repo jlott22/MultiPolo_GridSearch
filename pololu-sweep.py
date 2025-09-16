@@ -568,7 +568,8 @@ def uart_send(topic, payload_len):
 
 def publish_position():
     """Publish current pose (for UI/diagnostics)."""
-    register_robot_position(ROBOT_ID)
+    if not start_signal and ROBOT_ID not in reported_robot_ids:
+        register_robot_position(ROBOT_ID)
     i = 2
     i = _write_int(tx_buf, i, pos[0])
     tx_buf[i] = ord(','); i += 1
@@ -701,7 +702,8 @@ def handle_msg(line):
             return
         if not (0 <= ox < GRID_SIZE and 0 <= oy < GRID_SIZE):
             return
-        register_robot_position(sender)
+        if not start_signal and sender not in reported_robot_ids:
+            register_robot_position(sender)
         prev = peer_pos.get(sender)
         if prev and prev != (ox, oy):
             px, py = prev
