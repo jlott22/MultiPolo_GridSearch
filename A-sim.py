@@ -240,16 +240,14 @@ class Robot:
                             intent_pen = self.cfg.intent_penalty
                             break
 
-                reward_bonus = self.cfg.reward_factor * prob_map[self._idx(nx, ny)]
-                step_cost = (move + turn + visited_pen + serp + intent_pen) - reward_bonus
-                if step_cost < 0.01:
-                    step_cost = 0.01
-
+                step_cost = move + turn + visited_pen + serp + intent_pen
                 new_cost = cost_so_far[cur] + step_cost
                 if (nxt not in cost_so_far) or (new_cost < cost_so_far[nxt]):
                     cost_so_far[nxt] = new_cost
+                    reward_bonus = self.cfg.reward_factor * prob_map[self._idx(nx, ny)]
                     h = manhattan(nxt, goal)
-                    heapq.heappush(frontier, (new_cost + h, nxt, (dx, dy)))
+                    priority = new_cost + h - reward_bonus
+                    heapq.heappush(frontier, (priority, nxt, (dx, dy)))
                     came_from[nxt] = cur
 
         if goal not in came_from:
@@ -265,13 +263,23 @@ class Robot:
 
     def pick_goal(self, prob_map: List[float], reserved_goals: Dict[str, Cell]) -> Optional[Cell]:
         size = self.cfg.grid_size
+        reserved = set(reserved_goals.values())
         best, best_val = None, -1e30
+
+        # Prefer the cell straight ahead when it ties with others (matches firmware).
+        fx, fy = self.pos[0] + self.heading[0], self.pos[1] + self.heading[1]
+        if 0 <= fx < size and 0 <= fy < size:
+            forward = (fx, fy)
+            if forward not in self.know.visited and forward not in reserved:
+                best = forward
+                best_val = prob_map[self._idx(fx, fy)] * self.cfg.reward_factor
+
         for y in range(size):
             for x in range(size):
                 cell = (x, y)
                 if cell in self.know.visited:
                     continue
-                if cell in reserved_goals.values():
+                if cell in reserved:
                     continue
                 val = prob_map[self._idx(x, y)] * self.cfg.reward_factor
                 if val > best_val:
@@ -357,10 +365,10 @@ def start_states(cfg: Config) -> list[tuple[str, tuple[int,int], tuple[int,int]]
             ("00", (0, size - 1), (0, -1)),
             # 01: top-right, South
             ("01", (size - 1, 0), (0, 1)),
-            # 02: bottom-right, West (left)
-            ("02", (size - 1, size - 1), (-1, 0)),
-            # 03: top-left, East (right)
-            ("03", (0, 0), (1, 0)),
+            # 02: top-left, East (right)
+            ("02", (0, 0), (1, 0)),
+            # 03: bottom-right, West (left)
+            ("03", (size - 1, size - 1), (-1, 0)),
         ]
 
     raise ValueError("robots must be 1, 2, or 4")
