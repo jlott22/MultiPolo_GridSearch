@@ -71,6 +71,7 @@ METRIC_START_TIME_MS = None  # set after first post-calibration intersection
 start_signal = False  # set when hub command received
 intersection_visits = {}
 system_visits = {}  # track visits from all robots
+reported_robot_ids = set()  # robots that have shared a post-calibration location
 intersection_count = 0          # steps taken by this robot
 repeat_intersection_count = 0   # this robot's revisits
 system_repeat_count = 0         # revisits across the whole system
@@ -218,13 +219,18 @@ except KeyError as e:
 safe_assert(0 <= START_POS[0] < GRID_SIZE and 0 <= START_POS[1] < GRID_SIZE,
             "start position out of bounds")
 
-# IDs of robots participating in the sweep. Adjust this list to match the
-# robots actually deployed (supports 1–4 robots).
-ACTIVE_ROBOT_IDS = ["00", "01", "02", "03"]
+def register_robot_position(robot_id):
+    """Record that ``robot_id`` has shared a calibrated location update."""
+
+    if robot_id in START_CONFIG:
+        reported_robot_ids.add(robot_id)
 
 
-def generate_sweep_path():
+def generate_sweep_path(active_ids):
     """Return the predetermined sweep path for this robot.
+
+    ``active_ids`` is the collection of robots that broadcast their position
+    after calibration but before the start signal.
 
     Supports 1, 2, or 4 robots on a 10×10 grid. For one robot the entire
     grid is serpentine scanned. With two robots the grid is split into left
@@ -233,8 +239,10 @@ def generate_sweep_path():
     to exactly one robot so no collisions occur.
     """
 
-    total = len(ACTIVE_ROBOT_IDS)
-    idx = ACTIVE_ROBOT_IDS.index(ROBOT_ID)
+    if ROBOT_ID not in active_ids:
+        raise ValueError("This robot is not present in the active robot list")
+
+    total = len(active_ids)
 
     if total == 1:
         columns = range(GRID_SIZE)
@@ -247,9 +255,16 @@ def generate_sweep_path():
         return path[start_index:] + path[:start_index]
 
     if total == 2:
+        left_ids = [rid for rid in active_ids if rid in ("00", "02")]
+        right_ids = [rid for rid in active_ids if rid in ("01", "03")]
+        safe_assert(len(left_ids) == 1 and len(right_ids) == 1,
+                    "Two-robot sweep requires one left and one right robot")
+
         width = GRID_SIZE // 2
-        start_col = idx * width
-        columns = range(start_col, start_col + width)
+        if ROBOT_ID in left_ids:
+            columns = range(0, width)
+        else:
+            columns = range(width, GRID_SIZE)
         path = []
         for y in range(GRID_SIZE):
             cols = columns if y % 2 == 0 else reversed(list(columns))
@@ -259,6 +274,9 @@ def generate_sweep_path():
         return path[start_index:] + path[:start_index]
 
     if total == 4:
+        safe_assert(set(active_ids) == {"00", "01", "02", "03"},
+                    "Four-robot sweep requires robots 00, 01, 02, and 03")
+
         def owner(x, y):
             s = x + y
             if s < GRID_SIZE - 1:
@@ -554,6 +572,7 @@ def uart_send(topic, payload_len):
 
 def publish_position():
     """Publish current pose (for UI/diagnostics)."""
+    register_robot_position(ROBOT_ID)
     i = 2
     i = _write_int(tx_buf, i, pos[0])
     tx_buf[i] = ord(','); i += 1
@@ -686,6 +705,7 @@ def handle_msg(line):
             return
         if not (0 <= ox < GRID_SIZE and 0 <= oy < GRID_SIZE):
             return
+        register_robot_position(sender)
         prev = peer_pos.get(sender)
         if prev and prev != (ox, oy):
             px, py = prev
@@ -1147,14 +1167,17 @@ def search_loop():
     """
     global move_forward_flag, start_signal, METRIC_START_TIME_MS, pos, yield_count, FIRST_CLUE_TIME_MS
 
-    sweep_path = generate_sweep_path()
+    sweep_path = []
     path_index = 1  # starting cell already occupied
 
     try:
         calibrate()
 
-        # wait for hub start command, periodically sharing start position
+        publish_position()
+        publish_visited(pos[0], pos[1])
         last_pose_publish = time.ticks_ms()
+
+        # wait for hub start command, periodically sharing start position
         while not start_signal:
             uart_service()
             now = time.ticks_ms()
@@ -1163,6 +1186,13 @@ def search_loop():
                 publish_visited(pos[0], pos[1])
                 last_pose_publish = now
             time.sleep_ms(10)
+
+        # Freeze the set of active robots at the moment the start signal arrives
+        register_robot_position(ROBOT_ID)
+        active_ids = sorted(reported_robot_ids)
+        safe_assert(active_ids, "No active robots reported positions before start")
+        sweep_path = generate_sweep_path(active_ids)
+        path_index = 1
         METRIC_START_TIME_MS = time.ticks_ms()
 
         while running and not found_object and path_index < len(sweep_path):
