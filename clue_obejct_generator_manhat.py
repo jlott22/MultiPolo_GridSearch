@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import math
 import random
 from typing import List, Tuple, Dict
 
@@ -15,7 +14,7 @@ def weighted_clue_locations(
 ) -> List[Tuple[int, int]]:
     """Return ``clues_per_object`` unique clue locations weighted by distance.
 
-    ``mode`` selects the weighting scheme based on the Euclidean distance ``r``
+    ``mode`` selects the weighting scheme based on the Manhattan distance ``r``
     from the object:
 
     * ``"linear"``  – ``1 / (1 + r)``
@@ -31,7 +30,9 @@ def weighted_clue_locations(
             return 1 / (1 + r ** 2)
         return 1 / (1 + r)
 
-    weights = [weight(math.hypot(cx - obj[0], cy - obj[1])) for cx, cy in available]
+    weights = [
+        weight(abs(cx - obj[0]) + abs(cy - obj[1])) for cx, cy in available
+    ]
 
     clues: List[Tuple[int, int]] = []
     while len(clues) < clues_per_object and available:
