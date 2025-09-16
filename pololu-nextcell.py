@@ -50,10 +50,6 @@ from pololu_3pi_2040_robot import robot
 from pololu_3pi_2040_robot.extras import editions
 from pololu_3pi_2040_robot.buzzer import Buzzer
 
-# TODO:
-# - Ensure object reports use the updated location before sending.
-# - Improve intent handling to avoid collisions.
-# - Consider enlarging the grid and adding a desktop logging interface.
 # -----------------------------
 # Robot identity & start pose
 # -----------------------------
