@@ -224,9 +224,8 @@ CELL_SEARCHED   = 2
 
 grid = bytearray(GRID_SIZE * GRID_SIZE)
 prob_map = array('f', [1 / (GRID_SIZE * GRID_SIZE)] * (GRID_SIZE * GRID_SIZE))
-# Base reward so explored cells still have positive weight after costs
-BASE_REWARD = 1
-REWARD_FACTOR = 75
+# Probability scaling matches the A*/sweep controllers so metrics are comparable.
+REWARD_FACTOR = 5
 clues = []                            # list of (x, y) clue cells
 
 
@@ -848,15 +847,14 @@ def update_prob_map():
     Recompute prob_map.
     - Base uniform prior
     - Add Manhattan-decay bumps around all clues
-    - Visited cells retain a small probability so the robot can backtrack
+    - Visited cells get zero probability (mirrors the other controllers)
     """
     base = 1 / (GRID_SIZE * GRID_SIZE)
-    visited_base = base * 0.8
     for y in range(GRID_SIZE):
         for x in range(GRID_SIZE):
             i = idx(x, y)
             if grid[i] == CELL_SEARCHED:  # visited
-                prob_map[i] = visited_base
+                prob_map[i] = 0.0
                 continue
 
             clue_sum = 0.0
@@ -910,9 +908,9 @@ def pick_next_cell():
     Returns (x, y) or None if no move is available.
     """
     choices = []
-    weights = []
+    costs = []
     fallback_choices = []
-    fallback_weights = []
+    fallback_costs = []
     cx, cy = pos[0], pos[1]
     for dx, dy in ((1,0), (-1,0), (0,1), (0,-1)):
         nx, ny = cx + dx, cy + dy
@@ -923,46 +921,47 @@ def pick_next_cell():
             continue
         if i_should_yield(nx, ny):
             continue
-        if grid[i] == 2:
-            # Already searched cells ignore probability boosts so unknown cells
-            # always outrank them.
-            reward = BASE_REWARD
-        else:
-            # Give unsearched cells a small extra bump so they remain more
-            # desirable than any previously visited neighbor.
-            reward = BASE_REWARD + 1 + prob_map[i] * REWARD_FACTOR
-        cost = 0
+        reward = prob_map[i] * REWARD_FACTOR
+        # Match the other controllers: every step pays a base cost of 1 plus
+        # any turn/visited/center penalties, with clue probability acting as a
+        # reward that reduces the effective cost.
+        cost = 1.0
         if grid[i] == CELL_SEARCHED:
             cost += cfg.VISITED_STEP_PENALTY
         if (dx, dy) != heading:
             cost += cfg.TURN_PENALTY
         cost += centerward_step_cost(cx, cy, nx, ny)
-        weight = reward - cost
-        if grid[i] != CELL_SEARCHED and weight > 0:
+        cost -= reward
+        if grid[i] != CELL_SEARCHED:
             choices.append((nx, ny))
-            weights.append(weight)
+            costs.append(cost)
         else:
-            # Keep as fallback even if weight <= 0 so we can re-step.
-            # Use fixed weights so unknown cells remain more attractive than
-            # visited cells when all neighbors are poor choices.
             fallback_choices.append((nx, ny))
-            if grid[i] == 2:
-                fallback_weights.append(1)
-            else:
-                fallback_weights.append(max(2, weight))
+            fallback_costs.append(cost)
 
     if not choices:
         # All neighbors are visited or unattractive; allow revisiting
         if not fallback_choices:
             return None
         choices = fallback_choices
-        weights = fallback_weights
+        costs = fallback_costs
+
+    if not costs:
+        return None
+
+    max_cost = max(costs)
+    min_cost = min(costs)
+    if max_cost == min_cost:
+        weights = [1.0] * len(costs)
+    else:
+        epsilon = 1e-3
+        weights = [(max_cost - c) + epsilon for c in costs]
 
     total = sum(weights)
     r = random.uniform(0, total)
-    acc = 0
-    for cell, w in zip(choices, weights):
-        acc += w
+    acc = 0.0
+    for cell, weight in zip(choices, weights):
+        acc += weight
         if r < acc:
             return cell
     return choices[-1]
