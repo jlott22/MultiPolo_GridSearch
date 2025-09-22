@@ -1,4 +1,3 @@
-# Copyright 2024
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -285,7 +284,7 @@ class MotionConfig:
         self.BLACK_THRESH = 600      # calibrated "black" threshold (0..1000)
         self.STRAIGHT_CREEP = 900    # forward speed while "locked" straight
         self.START_LOCK_MS = 300     # hold straight this long after function starts
-        self.TURN_SPEED = 1000
+        self.TURN_SPEED = 3000
         self.YAW_90_MS = 0.3
         self.YAW_180_MS = 0.6
 
