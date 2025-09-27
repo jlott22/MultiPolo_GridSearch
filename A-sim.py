@@ -15,23 +15,23 @@ Key behaviors (as requested):
     VISITED_STEP_PENALTY (onto visited) +
     INTENT_PENALTY (into a peer's current or next-intended cell)
   Node priority receives reward bonus: - REWARD_FACTOR * prob(node).
-- Centerward penalty is only applied until the FIRST clue is found by the team.
-- Intent handling: current-frame truth only (no TTL).
-- Episode ends immediately when any robot steps on the object.
-- Object placement uniform over all cells. Clues drawn WITHOUT replacement by distance kernel f(r).
-  Default f(r) = 1/(1+r). Editable; also supports 1/(1+r^2).
+ - Centerward penalty is only applied until the FIRST clue is found by the team.
+ - Intent handling: current-frame truth only (no TTL).
+ - Episode ends immediately when any robot steps on the object.
+ - Object and clue placements are provided by the external generator file
+   (clue_object_generator.py). Trials can be saved/loaded via JSON.
 - Modes:
     * --mode batch : run N episodes, write CSV
     * --mode view  : pygame viewer with pause/step and live FPS control via '[' and ']'
 
 Usage examples:
-  python3 A-sim.py --mode batch --episodes 200 --robots 4 --grid 10 --seed 7 --csv out.csv
-  python3 A-sim.py --mode batch --robots 2 --clues 3 --clue-kernel one_over_1_plus_r2 --episodes 500
-  python3 A-sim.py --mode view --robots 4 --grid 10 --seed 7 --viewer-fps 2 --show-truth
+  python3 A-sim.py --mode batch --episodes 200 --robots 4 --grid 10 --csv out.csv
+  python3 A-sim.py --mode batch --robots 2 --clues 3 --episodes 500 --trials-out trials.json
+  python3 A-sim.py --mode view --robots 4 --grid 10 --viewer-fps 2 --show-truth --trials-in trials.json
   
   J-mac:mimic simulation lottjames22$ python3 A-sim.py --mode view --robots 4 --grid 10 --seed 7 --viewer-fps 2 --show-truth --clues 2
 
-Author: ChatGPT (for James)
+Author: James Lott
 """
 
 from __future__ import annotations
@@ -40,8 +40,9 @@ import csv
 import heapq
 import json
 import math
-import random
 import sys
+import os
+import importlib.util
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -77,18 +78,18 @@ class Config:
     grid_size: int = 10
     robots: int = 1
     clue_count: int = 2
-    clue_kernel: str = "one_over_1_plus_r"   # {"one_over_1_plus_r","one_over_1_plus_r2"}
     reward_factor: float = DEFAULT_REWARD_FACTOR
     center_step: float = DEFAULT_CENTER_STEP
     visited_step_penalty: float = DEFAULT_VISITED_STEP_PENALTY
     intent_penalty: float = DEFAULT_INTENT_PENALTY
     episodes: int = 100
     mode: str = "batch"
-    seed: Optional[int] = None
     max_steps_factor: int = 2  # hard cap = grid^2 * factor (safety)
     csv_path: str = "sim_results.csv"
     viewer_fps: int = 2
     show_truth_in_viewer: bool = True
+    trials_in: Optional[str] = None
+    trials_out: Optional[str] = None
 
 # ------------------------
 # Truth world & team knowledge
@@ -106,40 +107,41 @@ class Knowledge:
     first_clue_seen: bool = False
 
 # ------------------------
-# Placement sampling
+# Trials (external generator only)
 # ------------------------
-def kernel_one_over_1_plus_r(r: int) -> float:
-    return 1.0 / (1 + r)
 
-def kernel_one_over_1_plus_r2(r: int) -> float:
-    return 1.0 / (1 + r*r)
+def _load_external_generator():
+    here = os.path.dirname(__file__)
+    gen_path = os.path.join(here, "clue_object_generator.py")
+    if not os.path.isfile(gen_path):
+        raise RuntimeError("External generator file 'clue_object_generator.py' not found; the simulator requires it.")
+    spec = importlib.util.spec_from_file_location("clue_object_generator", gen_path)
+    if not spec or not spec.loader:
+        raise RuntimeError("Failed to load external generator module spec.")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+    return mod
 
-KERNELS: Dict[str, Callable[[int], float]] = {
-    "one_over_1_plus_r": kernel_one_over_1_plus_r,
-    "one_over_1_plus_r2": kernel_one_over_1_plus_r2,
-}
+def generate_trial_list(cfg: Config) -> List[Dict[str, List[Cell]]]:
+    """Generate trials using the external generator's ordering.
 
-def sample_object_and_clues(size: int, n_clues: int, rng: random.Random,
-                            kernel: Callable[[int], float]) -> Tuple[Cell, List[Cell]]:
-    obj = (rng.randrange(size), rng.randrange(size))
-    # All cells except object
-    cells = [(x, y) for y in range(size) for x in range(size) if (x, y) != obj]
-    weights = [kernel(manhattan((x, y), obj)) for (x, y) in cells]
-    if all(w <= 0 for w in weights):
-        weights = [1.0] * len(cells)
-    s = sum(weights)
-    weights = [w / s for w in weights]
-    clues: List[Cell] = []
-    for _ in range(n_clues):
-        c = rng.choices(cells, weights=weights, k=1)[0]
-        clues.append(c)
-        i = cells.index(c)
-        cells.pop(i); weights.pop(i)
-        if not cells:
-            break
-        s = sum(weights)
-        weights = [w / s for w in weights]
-    return obj, clues
+    Calls `generate_trials(grid_size, num_trials, clues_per_object)` from the external
+    file so the ordering and mode schedule are exactly as that file defines.
+    """
+    mod = _load_external_generator()
+    trials = mod.generate_trials(cfg.grid_size, cfg.episodes, cfg.clue_count)
+    return trials
+
+def load_trial_list(path: str) -> List[Dict[str, List[Cell]]]:
+    with open(path, "r") as f:
+        data = json.load(f)
+    # Expect list of {"object": [x,y], "clues": [[x,y], ...]}
+    trials: List[Dict[str, List[Cell]]] = []
+    for item in data:
+        obj = tuple(item["object"])  # type: ignore
+        clues = [tuple(c) for c in item["clues"]]
+        trials.append({"object": obj, "clues": clues})
+    return trials
 
 # ------------------------
 # Robot agent
@@ -152,7 +154,6 @@ class Robot:
     cfg: Config
     world: World
     know: Knowledge
-    rng: random.Random
 
     current_goal: Optional[Cell] = None
     steps_taken: int = 0
@@ -172,11 +173,16 @@ class Robot:
                 if cell in self.know.visited:
                     prob_map[self._idx(x, y)] = 0.0
                     continue
-                base = 1.0 / total_cells
-                clue_sum = 0.0
-                for (cx, cy) in self.know.known_clues:
-                    clue_sum += 5.0 / (1 + abs(x - cx) + abs(y - cy))
-                prob_map[self._idx(x, y)] = base + clue_sum
+                if len(self.know.known_clues) == 0:
+                    # Pre-clue: uniform over unvisited cells
+                    prob_map[self._idx(x, y)] = 1.0 / total_cells
+                else:
+                    # Post-clue: sum overlapping rewards from all known clues
+                    s = 0.0
+                    for (cx, cy) in self.know.known_clues:
+                        d = abs(x - cx) + abs(y - cy)
+                        s += 1.0 / (1.0 + d)
+                    prob_map[self._idx(x, y)] = s
         return prob_map
 
     def centerward_step_cost(self, curr: Cell, nxt: Cell) -> float:
@@ -240,14 +246,16 @@ class Robot:
                             intent_pen = self.cfg.intent_penalty
                             break
 
-                step_cost = move + turn + visited_pen + serp + intent_pen
+                reward_bonus = self.cfg.reward_factor * prob_map[self._idx(nx, ny)]
+                step_cost = (move + turn + visited_pen + serp + intent_pen) - reward_bonus
+                if step_cost < 0.01:
+                    step_cost = 0.01
+
                 new_cost = cost_so_far[cur] + step_cost
                 if (nxt not in cost_so_far) or (new_cost < cost_so_far[nxt]):
                     cost_so_far[nxt] = new_cost
-                    reward_bonus = self.cfg.reward_factor * prob_map[self._idx(nx, ny)]
                     h = manhattan(nxt, goal)
-                    priority = new_cost + h - reward_bonus
-                    heapq.heappush(frontier, (priority, nxt, (dx, dy)))
+                    heapq.heappush(frontier, (new_cost + h, nxt, (dx, dy)))
                     came_from[nxt] = cur
 
         if goal not in came_from:
@@ -263,23 +271,13 @@ class Robot:
 
     def pick_goal(self, prob_map: List[float], reserved_goals: Dict[str, Cell]) -> Optional[Cell]:
         size = self.cfg.grid_size
-        reserved = set(reserved_goals.values())
         best, best_val = None, -1e30
-
-        # Prefer the cell straight ahead when it ties with others (matches firmware).
-        fx, fy = self.pos[0] + self.heading[0], self.pos[1] + self.heading[1]
-        if 0 <= fx < size and 0 <= fy < size:
-            forward = (fx, fy)
-            if forward not in self.know.visited and forward not in reserved:
-                best = forward
-                best_val = prob_map[self._idx(fx, fy)] * self.cfg.reward_factor
-
         for y in range(size):
             for x in range(size):
                 cell = (x, y)
                 if cell in self.know.visited:
                     continue
-                if cell in reserved:
+                if cell in reserved_goals.values():
                     continue
                 val = prob_map[self._idx(x, y)] * self.cfg.reward_factor
                 if val > best_val:
@@ -365,10 +363,10 @@ def start_states(cfg: Config) -> list[tuple[str, tuple[int,int], tuple[int,int]]
             ("00", (0, size - 1), (0, -1)),
             # 01: top-right, South
             ("01", (size - 1, 0), (0, 1)),
-            # 02: top-left, East (right)
-            ("02", (0, 0), (1, 0)),
-            # 03: bottom-right, West (left)
-            ("03", (size - 1, size - 1), (-1, 0)),
+            # 02: bottom-right, West (left)
+            ("02", (size - 1, size - 1), (-1, 0)),
+            # 03: top-left, East (right)
+            ("03", (0, 0), (1, 0)),
         ]
 
     raise ValueError("robots must be 1, 2, or 4")
@@ -388,16 +386,16 @@ class EpisodeResult:
     replan_counts: Dict[str, int]
     revisits: int
 
-def run_episode(cfg: Config, rng: random.Random) -> EpisodeResult:
-    # Fixed truth for the episode
-    obj, clues = sample_object_and_clues(cfg.grid_size, cfg.clue_count, rng, KERNELS[cfg.clue_kernel])
+def run_episode(cfg: Config, trial: Tuple[Cell, List[Cell]]) -> EpisodeResult:
+    # Fixed truth for the episode from trial list
+    obj, clues = trial
     world = World(cfg.grid_size, obj, clues)
     know = Knowledge()
 
     # Robots
     robots: List[Robot] = []
     for rid, pos, heading in start_states(cfg):
-        rb = Robot(rid=rid, pos=pos, heading=heading, cfg=cfg, world=world, know=know, rng=rng)
+        rb = Robot(rid=rid, pos=pos, heading=heading, cfg=cfg, world=world, know=know)
         rb.path_history.append(pos)
         know.visited[pos] = know.visited.get(pos, 0) + 1
         robots.append(rb)
@@ -413,10 +411,6 @@ def run_episode(cfg: Config, rng: random.Random) -> EpisodeResult:
     while steps_total < max_steps and not found:
         # Clear reservations each frame; "first to reserve" is per-id order this tick
         reserved_goals: Dict[str, Cell] = {}
-
-        # (Optional safeguard) If absolutely no clue seen after ~2*grid steps, drop center penalty
-        if not know.first_clue_seen and steps_total >= 2 * cfg.grid_size:
-            know.first_clue_seen = True
 
         # Deterministic processing order by rid
         for rb in sorted(robots, key=lambda r: r.rid):
@@ -449,23 +443,32 @@ def run_episode(cfg: Config, rng: random.Random) -> EpisodeResult:
 # Batch mode
 # ------------------------
 def run_batch(cfg: Config) -> None:
-    rng = random.Random(cfg.seed)
+    # Prepare trial list
+    if cfg.trials_in:
+        trials = load_trial_list(cfg.trials_in)
+    else:
+        trials = generate_trial_list(cfg)
+        if cfg.trials_out:
+            # write JSON-friendly lists
+            with open(cfg.trials_out, "w") as tf:
+                json.dump(trials, tf)
+
     with open(cfg.csv_path, "w", newline="") as f:
         w = csv.writer(f)
         cols = [
             "episode","found","steps_total","robots","grid","object_x","object_y",
-            "clues","discovered_clues","revisits","replans_total","seed"
+            "clues","discovered_clues","revisits","replans_total"
         ] + [f"steps_{i:02d}" for i in range(cfg.robots)]
         w.writerow(cols)
-        for ep in range(cfg.episodes):
-            ep_seed = rng.randrange(1 << 30) if cfg.seed is not None else None
-            ep_rng = random.Random(ep_seed)
-            res = run_episode(cfg, ep_rng)
+        total_eps = min(cfg.episodes, len(trials)) if cfg.trials_in else cfg.episodes
+        for ep in range(total_eps):
+            trial = (tuple(trials[ep]["object"]), [tuple(c) for c in trials[ep]["clues"]])
+            res = run_episode(cfg, trial)
             replans_total = sum(res.replan_counts.values())
             row = [
                 ep, int(res.found), res.steps_total, cfg.robots, cfg.grid_size,
                 res.object_cell[0], res.object_cell[1],
-                cfg.clue_count, res.discovered_clues, res.revisits, replans_total, ep_seed
+                cfg.clue_count, res.discovered_clues, res.revisits, replans_total
             ] + [res.steps_per_robot.get(f"{i:02d}", 0) for i in range(cfg.robots)]
             w.writerow(row)
 
@@ -479,17 +482,26 @@ def run_viewer(cfg: Config) -> None:
         print("pygame is required for --mode view. Install with: python3 -m pip install pygame", file=sys.stderr)
         raise
 
-    rng = random.Random(cfg.seed)
-    ep_seed = rng.randrange(1 << 30) if cfg.seed is not None else None
-    ep_rng = random.Random(ep_seed)
+    # Prepare trials for viewer (cycle through)
+    if cfg.trials_in:
+        trials = load_trial_list(cfg.trials_in)
+    else:
+        trials = generate_trial_list(cfg)
+        if cfg.trials_out:
+            with open(cfg.trials_out, "w") as tf:
+                json.dump(trials, tf)
+    trial_index = 0
 
     def new_episode():
-        obj, clues = sample_object_and_clues(cfg.grid_size, cfg.clue_count, ep_rng, KERNELS[cfg.clue_kernel])
+        nonlocal trial_index
+        t = trials[trial_index % len(trials)]
+        trial_index += 1
+        obj, clues = tuple(t["object"]), [tuple(c) for c in t["clues"]]
         world = World(cfg.grid_size, obj, clues)
         know = Knowledge()
         robots: List[Robot] = []
         for rid, pos, heading in start_states(cfg):
-            rb = Robot(rid=rid, pos=pos, heading=heading, cfg=cfg, world=world, know=know, rng=ep_rng)
+            rb = Robot(rid=rid, pos=pos, heading=heading, cfg=cfg, world=world, know=know)
             rb.path_history.append(pos)
             know.visited[pos] = know.visited.get(pos, 0) + 1
             robots.append(rb)
@@ -551,7 +563,7 @@ def run_viewer(cfg: Config) -> None:
                                              cell_px - 20, cell_px - 20), 1)
 
         txt = (
-            f"robots={cfg.robots} grid={cfg.grid_size} seed={ep_seed} "
+            f"robots={cfg.robots} grid={cfg.grid_size} "
             f"paused={paused} fps={cfg.viewer_fps} known_clues={len(know.known_clues)}  "
             f"legend: robot=color block, goal=white square, clue=small dot, object=red box (--show-truth)"
         )
@@ -610,9 +622,7 @@ def parse_args(argv=None) -> Config:
     p.add_argument("--grid", type=int, default=10)
     p.add_argument("--robots", type=int, default=1, choices=[1, 2, 4])
     p.add_argument("--clues", type=int, default=2)
-    p.add_argument("--clue-kernel", choices=list(KERNELS.keys()), default="one_over_1_plus_r")
     p.add_argument("--episodes", type=int, default=100)
-    p.add_argument("--seed", type=int, default=None)
     p.add_argument("--csv", dest="csv_path", default="sim_results.csv")
     p.add_argument("--reward-factor", type=float, default=DEFAULT_REWARD_FACTOR)
     p.add_argument("--center-step", type=float, default=DEFAULT_CENTER_STEP)
@@ -621,23 +631,25 @@ def parse_args(argv=None) -> Config:
     p.add_argument("--max-steps-factor", type=int, default=2)
     p.add_argument("--viewer-fps", type=int, default=2)
     p.add_argument("--show-truth", action="store_true")
+    p.add_argument("--trials-in", dest="trials_in", default=None, help="Path to JSON list of precomputed trials")
+    p.add_argument("--trials-out", dest="trials_out", default=None, help="Write generated trials to this JSON path")
     a = p.parse_args(argv)
     return Config(
         grid_size=a.grid,
         robots=a.robots,
         clue_count=a.clues,
-        clue_kernel=a.clue_kernel,
         reward_factor=a.reward_factor,
         center_step=a.center_step,
         visited_step_penalty=a.visited_step_penalty,
         intent_penalty=a.intent_penalty,
         episodes=a.episodes,
         mode=a.mode,
-        seed=a.seed,
         max_steps_factor=a.max_steps_factor,
         csv_path=a.csv_path,
         viewer_fps=a.viewer_fps,
         show_truth_in_viewer=a.show_truth,
+        trials_in=a.trials_in,
+        trials_out=a.trials_out,
     )
 
 def main(argv=None):
@@ -650,3 +662,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
+
